@@ -52,6 +52,12 @@ import {
 } from '../utils/notificationEngine';
 import { validateAndFormatPhoneNumber, formatDisplayPhoneNumber } from '../utils/phoneValidator';
 import {
+  PowerAutomateConfig,
+  loadPowerAutomateConfig,
+  savePowerAutomateConfig,
+  sendViaPowerAutomate,
+} from '../utils/powerAutomateGateway';
+import {
   Bell,
   Send,
   CheckCheck,
@@ -147,6 +153,30 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
   const [isTestingWhatsApp, setIsTestingWhatsApp] = useState(false);
   const [isTestingEmail, setIsTestingEmail] = useState(false);
+  // FREE-TIER: Power Automate gateway (replaces paid SMTP / SendGrid / Cloud Run)
+  const [paConfig, setPaConfig] = useState<PowerAutomateConfig>({ flowUrl: '', sharedSecret: '', alsoSendTeamsChat: true });
+  const [paTestAddress, setPaTestAddress] = useState<string>(currentUser?.email || '');
+  const [isSavingPa, setIsSavingPa] = useState(false);
+  const canEditGateway = currentUser?.role === 'SUPER_ADMIN' || currentUser?.role === 'ADMIN';
+
+  useEffect(() => {
+    loadPowerAutomateConfig(true).then((cfg) => {
+      if (cfg) setPaConfig(cfg);
+    });
+  }, []);
+
+  const handleSavePowerAutomate = async () => {
+    setIsSavingPa(true);
+    try {
+      await savePowerAutomateConfig(paConfig, currentUser?.name || 'Administrator');
+      showToast?.('Power Automate gateway settings saved.');
+      onLogAudit?.('GATEWAY_CONFIG', 'Updated Power Automate notification gateway settings', 'WARNING');
+    } catch (err: any) {
+      showToast?.(`Could not save gateway settings: ${err?.message || 'unknown error'}`);
+    } finally {
+      setIsSavingPa(false);
+    }
+  };
 
   // Template Management
   const [templateCategory, setTemplateCategory] = useState<'whatsapp' | 'email'>('email');
@@ -476,53 +506,45 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
     setActiveTab('logs');
   };
 
-  // Test WhatsApp Gateway
+  // Test WhatsApp Gateway — FREE-TIER: WhatsApp Business API is paid, so it is off.
   const handleTestWhatsApp = async () => {
-    setIsTestingWhatsApp(true);
-    try {
-      const resp = await fetch('/api/notifications/whatsapp/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testNumber: '+260971234567' }),
-      });
-      const data = await resp.json();
-      const updatedConfig: WhatsAppProviderConfig = {
-        ...whatsAppConfig,
-        lastTestedAt: new Date().toISOString(),
-        lastTestStatus: data.success ? 'SUCCESS' : 'FAILED',
-        lastTestResponse: data.message || 'WhatsApp Cloud Gateway Handshake Successful',
-      };
-      setWhatsAppConfigState(updatedConfig);
-      saveWhatsAppConfig(updatedConfig);
-      showToast?.(data.message || 'WhatsApp API connection active & verified.');
-    } catch (err: any) {
-      showToast?.(`WhatsApp Test Completed: ${err?.message || 'Handshake Verified'}`);
-    } finally {
-      setIsTestingWhatsApp(false);
-    }
+    const updatedConfig: WhatsAppProviderConfig = {
+      ...whatsAppConfig,
+      lastTestedAt: new Date().toISOString(),
+      lastTestStatus: 'FAILED',
+      lastTestResponse: 'Disabled in free-tier build (Meta WhatsApp Business API is billed per conversation).',
+    };
+    setWhatsAppConfigState(updatedConfig);
+    saveWhatsAppConfig(updatedConfig);
+    showToast?.('WhatsApp Business API is a paid service and is off in the free build. Crew alerts go out by Outlook email and Teams chat via Power Automate.');
   };
 
-  // Test Email Gateway
+  // Test Email Gateway — FREE-TIER: sends a real test message through Power Automate.
   const handleTestEmail = async () => {
+    if (!paTestAddress) {
+      showToast?.('Enter an email address to send the test to.');
+      return;
+    }
     setIsTestingEmail(true);
     try {
-      const resp = await fetch('/api/notifications/email/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testEmail: 'occ-dispatch@zambiaairways.zm' }),
+      const result = await sendViaPowerAutomate({
+        kind: 'TEST',
+        channel: 'EMAIL',
+        to: paTestAddress,
+        recipientName: currentUser?.name,
+        subject: 'Zambia Airways Crew Control — gateway test',
+        textBody: 'This is a test message from the Crew Control notification gateway (Power Automate).',
+        htmlBody: '<p>This is a test message from the <b>Crew Control</b> notification gateway (Power Automate).</p>',
       });
-      const data = await resp.json();
       const updatedConfig: EmailProviderConfig = {
         ...emailConfig,
         lastTestedAt: new Date().toISOString(),
-        lastTestStatus: data.success ? 'SUCCESS' : 'FAILED',
-        lastTestResponse: data.message || 'SMTP Relay Handshake Successful (TLS 1.3)',
+        lastTestStatus: result.success ? 'SUCCESS' : 'FAILED',
+        lastTestResponse: result.message,
       };
       setEmailConfigState(updatedConfig);
       saveEmailConfig(updatedConfig);
-      showToast?.(data.message || 'Email SMTP relay active.');
-    } catch (err: any) {
-      showToast?.(`Email Test Completed: ${err?.message || 'Handshake Verified'}`);
+      showToast?.(result.message);
     } finally {
       setIsTestingEmail(false);
     }
@@ -1796,59 +1818,87 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
               </div>
             </div>
 
-            {/* Email Provider */}
+            {/* Email + Teams via Microsoft Power Automate (FREE-TIER gateway) */}
             <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <Mail className="w-5 h-5 text-blue-600" />
-                  <h3 className="text-sm font-bold text-slate-900">Email SMTP Transactional Gateway</h3>
+                  <h3 className="text-sm font-bold text-slate-900">Email &amp; Teams via Microsoft Power Automate</h3>
                 </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
-                  {emailConfig.status}
+                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${paConfig.flowUrl ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                  {paConfig.flowUrl ? 'CONFIGURED' : 'NOT CONFIGURED'}
                 </span>
               </div>
 
-              <div className="space-y-3 text-xs">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">SMTP Host</label>
-                    <input
-                      type="text"
-                      value={emailConfig.host}
-                      onChange={(e) => setEmailConfigState({ ...emailConfig, host: e.target.value })}
-                      className="w-full p-2 text-xs border border-slate-200 rounded bg-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">SMTP Port</label>
-                    <input
-                      type="number"
-                      value={emailConfig.port}
-                      onChange={(e) => setEmailConfigState({ ...emailConfig, port: Number(e.target.value) })}
-                      className="w-full p-2 text-xs border border-slate-200 rounded bg-white font-mono"
-                    />
-                  </div>
-                </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Free with Microsoft 365: messages are sent from your Outlook mailbox (and optionally as a Teams chat)
+                by a Power Automate flow. See <span className="font-mono">docs/FREE_TIER.md</span> for the flow setup.
+              </p>
 
+              <div className="space-y-3 text-xs">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Sender Email</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Flow HTTP POST URL</label>
                   <input
-                    type="text"
-                    value={emailConfig.senderEmail}
-                    onChange={(e) => setEmailConfigState({ ...emailConfig, senderEmail: e.target.value })}
-                    className="w-full p-2 text-xs border border-slate-200 rounded bg-white"
+                    type="password"
+                    autoComplete="off"
+                    disabled={!canEditGateway}
+                    placeholder="https://…powerplatform.com/…/invoke?api-version=…&sig=…"
+                    value={paConfig.flowUrl}
+                    onChange={(e) => setPaConfig({ ...paConfig, flowUrl: e.target.value })}
+                    className="w-full p-2 text-xs border border-slate-200 rounded bg-white font-mono disabled:bg-slate-100"
                   />
                 </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Shared secret (must match the flow&apos;s condition)</label>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    disabled={!canEditGateway}
+                    value={paConfig.sharedSecret}
+                    onChange={(e) => setPaConfig({ ...paConfig, sharedSecret: e.target.value })}
+                    className="w-full p-2 text-xs border border-slate-200 rounded bg-white font-mono disabled:bg-slate-100"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-slate-700">
+                  <input
+                    type="checkbox"
+                    disabled={!canEditGateway}
+                    checked={paConfig.alsoSendTeamsChat}
+                    onChange={(e) => setPaConfig({ ...paConfig, alsoSendTeamsChat: e.target.checked })}
+                  />
+                  Also send each email as a Microsoft Teams chat message
+                </label>
 
-                <div className="pt-2">
+                {canEditGateway && (
+                  <button
+                    onClick={handleSavePowerAutomate}
+                    disabled={isSavingPa}
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded font-bold text-xs transition"
+                  >
+                    {isSavingPa ? 'Saving…' : 'Save gateway settings'}
+                  </button>
+                )}
+
+                <div className="pt-2 border-t border-slate-200 space-y-2">
+                  <label className="block font-semibold text-slate-700">Send a test to</label>
+                  <input
+                    type="email"
+                    value={paTestAddress}
+                    onChange={(e) => setPaTestAddress(e.target.value)}
+                    placeholder="you@zambiaairways.co.zm"
+                    className="w-full p-2 text-xs border border-slate-200 rounded bg-white"
+                  />
                   <button
                     onClick={handleTestEmail}
                     disabled={isTestingEmail}
                     className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded font-bold text-xs flex items-center space-x-1.5 transition"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isTestingEmail ? 'animate-spin' : ''}`} />
-                    <span>Test SMTP TLS Handshake</span>
+                    <span>Send test message</span>
                   </button>
+                  {emailConfig.lastTestResponse && (
+                    <p className="text-[11px] text-slate-500">Last test: {emailConfig.lastTestResponse}</p>
+                  )}
                 </div>
               </div>
             </div>

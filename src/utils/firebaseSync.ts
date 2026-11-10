@@ -1,9 +1,16 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
+import { getAnalytics, isSupported as isAnalyticsSupported, type Analytics } from 'firebase/analytics';
 import {
   initializeFirestore,
   getFirestore,
   connectFirestoreEmulator,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  query,
+  orderBy,
+  limit,
+  documentId,
   doc,
   setDoc,
   onSnapshot,
@@ -33,10 +40,28 @@ const firebaseConfig = {
   storageBucket: firebaseConfigData.storageBucket,
   messagingSenderId: firebaseConfigData.messagingSenderId,
   appId: firebaseConfigData.appId,
+  measurementId: firebaseConfigData.measurementId || undefined,
 };
 
 export const app = initializeApp(firebaseConfig);
-const databaseId = firebaseConfigData.firestoreDatabaseId || undefined;
+
+// Google Analytics for Firebase (free, no billing needed). Only started in
+// production builds, and only where the browser supports it (it isn't
+// available in some private-browsing modes or non-browser contexts).
+export let analytics: Analytics | null = null;
+if (!import.meta.env.DEV && firebaseConfig.measurementId) {
+  isAnalyticsSupported()
+    .then((ok) => {
+      if (ok) analytics = getAnalytics(app);
+    })
+    .catch(() => {
+      analytics = null;
+    });
+}
+// FREE-TIER: always use the project's (default) Firestore database. Only the
+// (default) database gets the free daily quota; named databases are billed
+// from the first read and require a billing account to create.
+const databaseId: string | undefined = undefined;
 
 let firestoreInstance;
 try {
@@ -45,6 +70,12 @@ try {
     {
       ignoreUndefinedProperties: true,
       experimentalAutoDetectLongPolling: true,
+      // FREE-TIER: keep an on-device (IndexedDB) copy of every collection.
+      // When a user reopens the app, Firestore only bills reads for documents
+      // that changed since their last visit instead of re-reading the whole
+      // roster, which keeps a normal OCC team well inside the free
+      // 50,000 reads/day Spark-plan quota.
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
     },
     databaseId
   );
@@ -261,15 +292,28 @@ function queueCollectionWrite(
   });
 }
 
+/**
+ * FREE-TIER: the audit log only ever grows, so listening to the whole
+ * collection would re-read thousands of documents on every app load and
+ * eventually exhaust the free daily read quota. The live view is capped to
+ * the most recent entries (ids are `log-<epoch ms>-…`, so ordering by
+ * document id descending = newest first). Older entries stay in Firestore.
+ */
+export const AUDIT_LOG_LIVE_LIMIT = 500;
+
 function subscribeCollection<T>(
   collectionName: string,
   onUpdate: ((items: T[]) => void) | undefined,
   onStatus: () => void,
   onError: (name: string, err: unknown) => void,
-  idField: string = 'id'
+  idField: string = 'id',
+  maxDocs?: number
 ): () => void {
+  const source = maxDocs
+    ? query(collection(db, collectionName), orderBy(documentId(), 'desc'), limit(maxDocs))
+    : collection(db, collectionName);
   return onSnapshot(
-    collection(db, collectionName),
+    source,
     (snap) => {
       onStatus();
       const cache = getCache(collectionName);
@@ -401,7 +445,7 @@ export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks): () => voi
   const unsubLeave = subscribeCollection<LeaveTrainingRecord>('leave', callbacks.onLeaveUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubFleet = subscribeCollection<AircraftFleet>('fleet', callbacks.onFleetUpdate, updateConnectionStatus, handleSnapshotError, 'registration');
   const unsubUsers = subscribeCollection<SystemUser>('users', callbacks.onUsersUpdate, updateConnectionStatus, handleSnapshotError);
-  const unsubAudit = subscribeCollection<AuditLog>('auditLogs', callbacks.onAuditLogsUpdate, updateConnectionStatus, handleSnapshotError);
+  const unsubAudit = subscribeCollection<AuditLog>('auditLogs', callbacks.onAuditLogsUpdate, updateConnectionStatus, handleSnapshotError, 'id', AUDIT_LOG_LIVE_LIMIT);
   const unsubAcks = subscribeCollection<RosterAcknowledgment>('acknowledgments', callbacks.onAcknowledgmentsUpdate, updateConnectionStatus, handleSnapshotError);
 
   const unsubRules = onSnapshot(

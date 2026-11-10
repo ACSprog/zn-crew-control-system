@@ -1,3 +1,4 @@
+import { sendViaPowerAutomate } from './powerAutomateGateway';
 import {
   NotificationItem,
   NotificationChannel,
@@ -567,57 +568,52 @@ export async function dispatchNotificationToProvider(
       provider: 'META_CLOUD_API',
       providerMessageId: `wa_disabled_${Date.now()}`,
       status: 'FAILED',
-      errorMessage: 'WhatsApp notifications are paused / disabled by administrator.',
+      errorMessage: 'WhatsApp Business API is a paid service and is switched off in the free-tier build. Use Email (sent via Outlook + Teams through Power Automate) or In-App instead.',
     };
   }
 
-  // 2. Email Provider Dispatch
+  // 2. Email Provider Dispatch — FREE-TIER: via Microsoft Power Automate
+  // (Outlook + optional Teams chat), no paid SMTP/SendGrid/Cloud Run needed.
   if (item.channel === 'EMAIL') {
-    try {
-      const resp = await fetch('/api/notifications/email/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: item.recipientEmail,
-          recipientName: item.recipientName,
-          subject: item.subject,
-          htmlBody: item.htmlMessage,
-          plainTextBody: item.message,
-          priority: item.priority,
-          notificationId: item.id,
-        }),
-      });
-
-      const data = await resp.json();
-
-      if (resp.ok && data.success) {
-        return {
-          success: true,
-          channel: 'EMAIL',
-          provider: data.provider || 'SMTP_TRANSACTIONAL',
-          providerMessageId: data.providerMessageId,
-          status: 'SENT',
-          sentAt: now,
-          deliveredAt: now,
-        };
-      }
-
+    if (!item.recipientEmail) {
       return {
         success: false,
         channel: 'EMAIL',
-        provider: 'SMTP_TRANSACTIONAL',
+        provider: 'POWER_AUTOMATE',
         status: 'FAILED',
-        errorMessage: data.errorMessage || data.error || 'Email SMTP Transactional Dispatch Failed',
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        channel: 'EMAIL',
-        provider: 'SMTP_TRANSACTIONAL',
-        status: 'FAILED',
-        errorMessage: err?.message || 'Network timeout contacting SMTP mail relay',
+        errorMessage: 'Crew member has no email address on file.',
       };
     }
+    const result = await sendViaPowerAutomate({
+      kind: 'NOTIFICATION',
+      channel: 'EMAIL',
+      to: item.recipientEmail,
+      recipientName: item.recipientName,
+      subject: item.subject || 'Zambia Airways Crew Control notification',
+      htmlBody: item.htmlMessage,
+      textBody: item.message,
+      priority: item.priority,
+      notificationId: item.id,
+    });
+    if (result.success) {
+      return {
+        success: true,
+        channel: 'EMAIL',
+        provider: 'POWER_AUTOMATE',
+        providerMessageId: `pa_${Date.now()}`,
+        status: 'SENT',
+        sentAt: now,
+        // Delivery is only known for sure when the flow's reply was readable.
+        ...(result.confirmed ? { deliveredAt: now } : {}),
+      };
+    }
+    return {
+      success: false,
+      channel: 'EMAIL',
+      provider: 'POWER_AUTOMATE',
+      status: 'FAILED',
+      errorMessage: result.message,
+    };
   }
 
   // 3. In-App Provider Dispatch (Always succeeds instantaneously)
