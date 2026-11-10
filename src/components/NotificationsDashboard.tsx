@@ -1823,7 +1823,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <Mail className="w-5 h-5 text-blue-600" />
-                  <h3 className="text-sm font-bold text-slate-900">Email &amp; Teams via Microsoft Power Automate</h3>
+                  <h3 className="text-sm font-bold text-slate-900">Email gateway (Power Automate or Gmail)</h3>
                 </div>
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${paConfig.flowUrl ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
                   {paConfig.flowUrl ? 'CONFIGURED' : 'NOT CONFIGURED'}
@@ -1831,18 +1831,18 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
               </div>
 
               <p className="text-[11px] text-slate-600 leading-relaxed">
-                Free with Microsoft 365: messages are sent from your Outlook mailbox (and optionally as a Teams chat)
-                by a Power Automate flow. See <span className="font-mono">docs/FREE_TIER.md</span> for the flow setup.
+                Paste either a Microsoft Power Automate flow URL (Outlook + optional Teams chat, free with Microsoft 365)
+                or a Google Apps Script web app URL (Gmail, free). See <span className="font-mono">docs/FREE_TIER.md</span>.
               </p>
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Flow HTTP POST URL</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Gateway URL (Power Automate flow or Apps Script /exec)</label>
                   <input
                     type="password"
                     autoComplete="off"
                     disabled={!canEditGateway}
-                    placeholder="https://…powerplatform.com/…/invoke?api-version=…&sig=…"
+                    placeholder="https://…powerplatform.com/…&sig=…  or  https://script.google.com/macros/s/…/exec"
                     value={paConfig.flowUrl}
                     onChange={(e) => setPaConfig({ ...paConfig, flowUrl: e.target.value })}
                     className="w-full p-2 text-xs border border-slate-200 rounded bg-white font-mono disabled:bg-slate-100"
@@ -1866,7 +1866,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
                     checked={paConfig.alsoSendTeamsChat}
                     onChange={(e) => setPaConfig({ ...paConfig, alsoSendTeamsChat: e.target.checked })}
                   />
-                  Also send each email as a Microsoft Teams chat message
+                  Also send each email as a Microsoft Teams chat message (Power Automate only)
                 </label>
 
                 {canEditGateway && (
