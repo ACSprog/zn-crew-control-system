@@ -1,0 +1,136 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------------
+    // Role model: every signed-in user's Firebase Auth ID token carries a
+    // `role` custom claim, set only by an administrator via
+    // scripts/create-user.mjs (never settable by the client). Nothing in
+    // this file trusts any field inside a Firestore document for access
+    // control — only the token itself.
+    // ---------------------------------------------------------------------
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return request.auth.token.role;
+    }
+
+    function isAdmin() {
+      return signedIn() && role() in ['SUPER_ADMIN', 'ADMIN'];
+    }
+
+    function isScheduler() {
+      return signedIn() && role() in ['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER'];
+    }
+
+    function isChiefPilot() {
+      return signedIn() && role() == 'CHIEF_PILOT';
+    }
+
+    function isAuditor() {
+      return signedIn() && role() == 'AUDITOR';
+    }
+
+    function isCrewSelf() {
+      return signedIn() && role() in ['FLIGHT_CREW', 'PILOT_CABIN'];
+    }
+
+    function canManageRoster() {
+      return isAdmin() || isScheduler() || isChiefPilot();
+    }
+
+    function canReadAllOperationalData() {
+      return isAdmin() || isScheduler() || isChiefPilot() || isAuditor();
+    }
+
+    function isOwnCrewRecord() {
+      return isCrewSelf() && request.auth.token.email == resource.data.email;
+    }
+
+    match /crew/{id} {
+      allow read: if canReadAllOperationalData() || isOwnCrewRecord();
+      allow write: if canManageRoster();
+    }
+
+    match /flights/{id} {
+      allow read: if signedIn();
+      allow write: if canManageRoster();
+    }
+
+    match /assignments/{id} {
+      allow read: if signedIn();
+      allow write: if canManageRoster();
+    }
+
+    match /leave/{id} {
+      allow read: if canReadAllOperationalData() || isCrewSelf();
+      allow write: if canManageRoster();
+    }
+
+    match /fleet/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /auditLogs/{id} {
+      allow read: if canReadAllOperationalData();
+      allow create: if signedIn();
+      allow update, delete: if false;
+    }
+
+    match /acknowledgments/{id} {
+      allow read: if canReadAllOperationalData() || isCrewSelf();
+      allow write: if signedIn();
+    }
+
+    match /config/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /notificationLogs/{id} {
+      allow read: if canReadAllOperationalData();
+      allow write: if isAdmin() || isScheduler();
+    }
+
+    match /notificationQueue/{id} {
+      allow read, write: if isAdmin() || isScheduler();
+    }
+
+    // WhatsApp/email delivery receipts — written only by the server via
+    // the Firebase Admin SDK, which bypasses these rules entirely. Clients
+    // may read (for the notifications dashboard) but never write.
+    match /deliveryReceipts/{id} {
+      allow read: if canReadAllOperationalData();
+      allow write: if false;
+    }
+
+       // AI Assistant chat sessions — strictly private per-user, nested under
+    // their own uid in the path itself, so ownership is enforced by path
+    // structure rather than a document field (and needs no composite
+    // index, unlike a flat collection filtered by a uid field).
+    match /aiChatSessions/{uid}/sessions/{sessionId} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+
+      match /messages/{messageId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create: if signedIn() && request.auth.uid == uid;
+        allow delete: if signedIn() && request.auth.uid == uid;
+        allow update: if false;
+      }
+    }
+
+    // Everything else: default deny.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

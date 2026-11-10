@@ -1,0 +1,197 @@
+{
+  "entities": {
+    "crew": {
+      "title": "Crew Member",
+      "description": "Airline pilots, cabin crew, and instructors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staffNumber": { "type": "string" },
+        "name": { "type": "string" },
+        "rank": { "type": "string" },
+        "qualifications": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "flights": {
+      "title": "Flight Schedule",
+      "description": "Zambia Airways scheduled commercial flights",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "flightNumber": { "type": "string" },
+        "origin": { "type": "string" },
+        "destination": { "type": "string" }
+      }
+    },
+    "assignments": {
+      "title": "Roster Assignments",
+      "description": "Flight crew duty assignments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "flightId": { "type": "string" },
+        "crewId": { "type": "string" }
+      }
+    },
+    "leaveRecords": {
+      "title": "Leave and Training Records",
+      "description": "Annual leave, sick leave, simulator and line training",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "crewId": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    },
+    "fleet": {
+      "title": "Aircraft Fleet",
+      "description": "Active aircraft fleet details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "registration": { "type": "string" }
+      }
+    },
+    "systemUsers": {
+      "title": "System Users",
+      "description": "System accounts and permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" }
+      }
+    },
+    "auditLogs": {
+      "title": "Audit Logs",
+      "description": "Immutable system activity logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user": { "type": "string" },
+        "action": { "type": "string" }
+      }
+    },
+    "notificationTemplates": {
+      "title": "Notification Templates",
+      "description": "WhatsApp and Email communication templates with variables",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "channel": { "type": "string" },
+        "subject": { "type": "string" }
+      }
+    },
+    "notificationQueue": {
+      "title": "Notification Queue",
+      "description": "Active queue of operational flight notifications with status tracking (PENDING, QUEUED, SENDING, SENT, DELIVERED, FAILED)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "recipientStaffNumber": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "recipientPhone": { "type": "string" },
+        "recipientWhatsApp": { "type": "string" },
+        "channel": { "type": "string", "enum": ["WHATSAPP", "EMAIL", "IN_APP", "SMS"] },
+        "notificationType": { "type": "string" },
+        "priority": { "type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "INFORMATION"] },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "QUEUED", "SENDING", "SENT", "DELIVERED", "READ", "FAILED", "CANCELLED"] },
+        "flightNumber": { "type": "string" },
+        "flightDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "deliveredAt": { "type": "string" },
+        "retryCount": { "type": "number" },
+        "maxRetries": { "type": "number" },
+        "provider": { "type": "string" },
+        "initiatedBy": { "type": "string" }
+      },
+      "required": ["id", "recipientId", "recipientName", "channel", "notificationType", "priority", "subject", "message", "status", "createdAt", "initiatedBy"]
+    },
+    "notificationLogs": {
+      "title": "Notification Audit & Delivery Logs",
+      "description": "Comprehensive Firestore log entries recording notification delivery lifecycle, provider responses, and crew delivery receipts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "queueId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "recipientStaffNumber": { "type": "string" },
+        "recipientContact": { "type": "string" },
+        "channel": { "type": "string", "enum": ["WHATSAPP", "EMAIL", "IN_APP", "SMS"] },
+        "notificationType": { "type": "string" },
+        "priority": { "type": "string", "enum": ["CRITICAL", "HIGH", "NORMAL", "INFORMATION"] },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "SENT", "DELIVERED", "FAILED", "READ", "CANCELLED"] },
+        "flightNumber": { "type": "string" },
+        "flightDate": { "type": "string" },
+        "dutyCode": { "type": "string" },
+        "provider": { "type": "string" },
+        "providerMessageId": { "type": "string" },
+        "retryCount": { "type": "number" },
+        "errorMessage": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "deliveredAt": { "type": "string" },
+        "readAt": { "type": "string" },
+        "failedAt": { "type": "string" },
+        "initiatedBy": { "type": "string" },
+        "acknowledgedByCrew": { "type": "boolean" },
+        "acknowledgedAt": { "type": "string" }
+      },
+      "required": ["id", "recipientId", "recipientName", "channel", "notificationType", "priority", "subject", "message", "status", "createdAt", "initiatedBy"]
+    },
+    "notificationPreferences": {
+      "title": "Crew Notification Preferences",
+      "description": "Crew member communication preferences and opt-in settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "crewId": { "type": "string" },
+        "preferredChannel": { "type": "string" },
+        "whatsAppOptIn": { "type": "boolean" }
+      }
+    },
+    "notificationProviders": {
+      "title": "Notification Providers Config",
+      "description": "WhatsApp Business API and Email provider configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "providerType": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "notificationSettings": {
+      "title": "Notification System Settings",
+      "description": "Automated trigger configurations, retry policies, and reminder timing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "autoTriggers": { "type": "object" },
+        "retrySettings": { "type": "object" }
+      }
+    }
+  },
+  "firestore": {
+    "/notificationLogs/{logId}": {
+      "schema": "notificationLogs",
+      "description": "Collection of notification delivery logs, status tracking, and provider responses"
+    },
+    "/notificationQueue/{queueId}": {
+      "schema": "notificationQueue",
+      "description": "Active operational notification queue items awaiting or undergoing delivery"
+    },
+    "/zambia_airways_occ/{docId}": {
+      "schema": "auditLogs",
+      "description": "Operational OCC synchronized documents (crew, flights, assignments, logs, etc.)"
+    }
+  }
+}

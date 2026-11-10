@@ -1,0 +1,22 @@
+{
+  "short_name": "ZA Crew",
+  "name": "Zambia Airways Crew Control & Operations",
+  "description": "Airline Crew Roster, Legality Compliance, OCC Control & Flight Operations System",
+  "icons": [
+    {
+      "src": "pwa-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "pwa-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#2E2C2B",
+  "theme_color": "#2E2C2B",
+  "display": "standalone",
+  "orientation": "any"
+}

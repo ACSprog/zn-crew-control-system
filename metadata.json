@@ -1,0 +1,6 @@
+{
+  "name": "Zambia Airways Crew Control",
+  "description": "Airline Crew Operations & Scheduling Management Control Center featuring automated roster generation, legality checker, conflict checker, and AI assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
