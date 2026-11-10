@@ -111,7 +111,7 @@ const VIEW_TITLES: Record<ActiveView, { title: string; subtitle: string }> = {
   },
   assistant: {
     title: 'AI Assistant',
-    subtitle: 'Gemini-Powered Intelligent Schedule Analytics & Advisory',
+    subtitle: 'AI Schedule Analytics & Advisory via Microsoft 365 Copilot Chat',
   },
   legacy: {
     title: 'Legacy Excel System Mapping',

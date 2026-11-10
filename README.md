@@ -10,11 +10,13 @@ View your app in AI Studio: https://ai.studio/apps/33b74f1d-975c-491a-96d7-ace7a
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
+**Prerequisites:**  Node.js, Firebase CLI
 
+> This branch runs entirely on free tiers (Firebase Spark + Microsoft 365).
+> See [docs/FREE_TIER.md](docs/FREE_TIER.md) for what changed and how to set up the
+> Power Automate notification flow.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1. Install dependencies: `npm install`
+2. Start the local emulators: `npm run emulators`
+3. Run the app: `npm run dev`
+4. Deploy (hosting + Firestore rules only): `npm run deploy`

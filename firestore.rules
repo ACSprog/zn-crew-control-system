@@ -96,6 +96,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // FREE-TIER: Power Automate gateway settings (flow URL + shared secret).
+    // Readable only by OCC staff who dispatch notifications, never by crew.
+    match /integrations/{id} {
+      allow read: if isAdmin() || isScheduler();
+      allow write: if isAdmin();
+    }
+
     match /notificationLogs/{id} {
       allow read: if canReadAllOperationalData();
       allow write: if isAdmin() || isScheduler();

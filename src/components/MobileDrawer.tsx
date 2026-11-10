@@ -111,7 +111,7 @@ export const MobileDrawer: React.FC<MobileDrawerProps> = ({
       items: [
         { id: 'guide', label: 'Staff Training & Manual', icon: BookOpen },
         { id: 'users', label: 'User Access & Roles', icon: ShieldCheck },
-        { id: 'assistant', label: 'Gemini AI Assistant', icon: Bot },
+        { id: 'assistant', label: 'AI Assistant (Copilot)', icon: Bot },
         { id: 'reports', label: 'Reports & PDF Export', icon: BarChart3 },
         { id: 'legacy', label: 'Legacy Excel / VBA', icon: FileCode2 },
         { id: 'settings', label: 'Settings & Rules', icon: Settings },

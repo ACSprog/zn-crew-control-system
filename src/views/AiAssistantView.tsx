@@ -13,6 +13,47 @@ import {
   deleteChatSession,
 } from '../utils/aiChatHistory';
 
+const COPILOT_CHAT_URL = 'https://m365copilot.com';
+
+/**
+ * Builds a self-contained markdown briefing (instructions + live data) for
+ * Microsoft 365 Copilot Chat and triggers a download. Returns the file name.
+ */
+function downloadCopilotSnapshot(question: string, context: Record<string, unknown>): string {
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+  const fileName = `ZN-crew-ops-snapshot-${stamp}.md`;
+  const content = [
+    '# Zambia Airways Crew Control — operational data snapshot',
+    `Generated: ${new Date().toISOString()}`,
+    '',
+    '## Instructions for the assistant',
+    'You are the Zambia Airways Crew Control Operations Assistant. Answer questions about crew availability,',
+    'flight schedules, legality restrictions, crew utilisation and open positions using ONLY the data below.',
+    'If something is not in the data, say so plainly rather than guessing.',
+    'Every crew assignment recommendation MUST state: "Recommendation subject to deterministic FTL Legality Engine validation."',
+    'Be concise and operational in tone, with bullet points and key statistics.',
+    '',
+    '## Question',
+    question,
+    '',
+    '## Data (JSON)',
+    '```json',
+    JSON.stringify(context, null, 1),
+    '```',
+    '',
+  ].join('\n');
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return fileName;
+}
+
 interface AiAssistantViewProps {
   crew: CrewMember[];
   flights: Flight[];
@@ -217,40 +258,71 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
         location: f.location,
       }));
 
-      const idToken = await auth.currentUser?.getIdToken();
-      if (!idToken) {
-        throw new Error('You must be signed in to use the assistant.');
-      }
+      const context = {
+        rules,
+        crew: crewOperational,
+        flights: flightsOperational,
+        assignments: assignmentsOperational,
+        leave: leaveOperational,
+        fleet: fleetOperational,
+      };
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({
-          message: query,
-          context: {
-            rules,
-            crew: crewOperational,
-            flights: flightsOperational,
-            assignments: assignmentsOperational,
-            leave: leaveOperational,
-            fleet: fleetOperational,
+      // Optional: any AI backend you host yourself (e.g. the paid Cloud Run
+      // server, or a free Cloudflare Worker). Leave VITE_AI_BACKEND_URL empty
+      // to use the free Microsoft 365 Copilot Chat handoff below.
+      const aiBackendUrl = (import.meta.env.VITE_AI_BACKEND_URL as string | undefined)?.trim();
+
+      if (aiBackendUrl) {
+        const idToken = await auth.currentUser?.getIdToken();
+        if (!idToken) {
+          throw new Error('You must be signed in to use the assistant.');
+        }
+        const response = await fetch(aiBackendUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
           },
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || data.details || `Server returned status ${response.status}`);
+          body: JSON.stringify({ message: query, context }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || data.details || `Server returned status ${response.status}`);
+        }
+        await saveSessionMessage(uid, sessionId, 'assistant', data.reply || 'No response returned.', true);
+      } else {
+        // FREE-TIER: Microsoft 365 Copilot Chat handoff. Copilot Chat is
+        // included with Microsoft 365 work accounts and has enterprise data
+        // protection (prompts and files are not used for model training).
+        const fileName = downloadCopilotSnapshot(query, context);
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(query);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+        await saveSessionMessage(
+          uid,
+          sessionId,
+          'assistant',
+          [
+            '**Free-tier mode — answer this in Microsoft 365 Copilot Chat**',
+            '',
+            `1. A data snapshot was downloaded: \`${fileName}\` (current crew, flights, assignments, leave, fleet and FTL rules).`,
+            `2. Open [Microsoft 365 Copilot Chat](${COPILOT_CHAT_URL}) and sign in with your **work** account (look for the green shield).`,
+            '3. Attach the snapshot file and paste your question' + (copied ? ' (already copied to your clipboard).' : ':'),
+            '',
+            `> ${query}`,
+            '',
+            '_Any crew assignment Copilot suggests is a recommendation only and must pass the FTL Legality Engine in this system before it is rostered._',
+          ].join('\n'),
+          false
+        );
       }
-
-      await saveSessionMessage(uid, sessionId, 'assistant', data.reply || 'No response returned.', true);
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : 'Please check your backend connection.';
-      await saveSessionMessage(uid, sessionId, 'assistant', `Error connecting to Gemini Assistant service: ${detail}`, false);
+      await saveSessionMessage(uid, sessionId, 'assistant', `Error contacting the AI assistant: ${detail}`, false);
     } finally {
       setIsLoading(false);
     }
