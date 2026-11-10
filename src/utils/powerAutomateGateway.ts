@@ -104,6 +104,27 @@ export async function sendViaPowerAutomate(payload: PowerAutomatePayload): Promi
     payload.channel === 'EMAIL' && config.alsoSendTeamsChat ? 'EMAIL_AND_TEAMS' : payload.channel;
   const body = JSON.stringify({ ...payload, channel, secret: config.sharedSecret, sentAt: new Date().toISOString() });
 
+  // Option B: Gmail via Google Apps Script web app. A text/plain POST is a
+  // CORS "simple request" (no preflight, which Apps Script can't answer) and
+  // its JSON reply {success, message} is readable after the redirect.
+  if (/^https:\/\/script\.google\.com\//i.test(config.flowUrl)) {
+    try {
+      const resp = await fetch(config.flowUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body,
+        redirect: 'follow',
+      });
+      const data = (await resp.json().catch(() => null)) as { success?: boolean; message?: string } | null;
+      if (data && typeof data.success === 'boolean') {
+        return { success: data.success, confirmed: true, message: data.message || (data.success ? 'Sent via Gmail.' : 'Gmail gateway rejected the message.') };
+      }
+      return { success: false, confirmed: true, message: `Unexpected reply from Apps Script (HTTP ${resp.status}). Check the deployment is "Anyone" access.` };
+    } catch (err) {
+      return { success: false, confirmed: true, message: `Could not reach the Gmail gateway: ${(err as Error)?.message || 'network error'}` };
+    }
+  }
+
   try {
     const resp = await fetch(config.flowUrl, {
       method: 'POST',

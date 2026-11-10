@@ -58,7 +58,40 @@ use `npm run paid:dev-server`.
 4. **Revoke the Gemini API key that was committed in `.env.example`.** It is still in git
    history. Then switch the project to the **Spark** plan (Firebase console → Usage and billing).
 
-## 4. Build the Power Automate notification flow (about 15 minutes, no premium licence)
+## 4. Email notifications: pick one gateway
+
+Both options plug into the same setting (**Notifications → Gateway settings**). You can
+switch later by pasting a different URL.
+
+| | Option A: Power Automate (recommended for production) | Option B: Gmail via Apps Script (testing / interim) |
+|---|---|---|
+| Needs | A Zambia Airways Microsoft 365 work account | Any Google account |
+| Sends from | An official airline mailbox, e.g. `crewcontrol@zambiaairways.co.zm` | The Gmail account that deployed the script |
+| Teams chat | Yes | No |
+| Daily volume | Outlook connector limits (high) | About 100 recipients a day on a personal Gmail |
+| Delivery confirmed in app | Usually not (check the flow run history) | Yes |
+
+### Option B: Gmail via Google Apps Script (about 5 minutes)
+
+1. Go to <https://script.google.com> → **New project**. Replace the code with
+   [`integrations/google-apps-script/Code.gs`](../integrations/google-apps-script/Code.gs).
+2. Go to **Project Settings → Script properties** and add:
+   - `SHARED_SECRET`: a long random string. You'll paste the same value into the app.
+   - `ALLOWED_DOMAINS`: `zambiaairways.co.zm,gmail.com`. Recipients outside these
+     domains are refused. Remove `gmail.com` once testing is over.
+   - `SENDER_NAME`: `Zambia Airways Crew Control`
+   - `REPLY_TO` (optional): `occ@zambiaairways.co.zm`
+3. Go to **Deploy → New deployment → Web app**. Set *Execute as*: **Me** and *Who has
+   access*: **Anyone**. Approve the Gmail permission prompt.
+4. Copy the **Web app URL** (it ends in `/exec`).
+5. In Crew Control, open **Notifications → Gateway settings**:
+   - Paste the URL and the shared secret.
+   - Click **Save**, then **Send test message**.
+
+If you edit the script later, use **Deploy → Manage deployments → Edit → New version**.
+This keeps the same URL.
+
+### Option A: Power Automate flow (about 15 minutes, no premium licence)
 
 Sign in to <https://make.powerautomate.com> with the **shared OCC mailbox account** if you
 have one, so emails come from `crewcontrol@…` rather than a person.
@@ -110,7 +143,47 @@ is received" trigger. That one is **premium**.
 The Office 365 Outlook connector has a daily send cap per mailbox. Check the cap for your
 licence before doing very large bulk roster publications.
 
-## 5. AI assistant via Microsoft 365 Copilot Chat
+## 5. Hosting online before going live (staging)
+
+GitHub Actions deploys automatically:
+
+- **Every pull request** builds the app and publishes it to a Firebase Hosting **preview
+  channel**. This is a private-ish test URL like
+  `https://zn-crew-contol-system--staging-xxxx.web.app`, and the bot posts it as a comment
+  on the PR. It expires after 30 days, and the live site is not touched.
+- **Merging into `master`** publishes the live site at `https://zn-crew-contol-system.web.app`.
+- Both also deploy `firestore.rules`.
+
+The preview and the live site share **one** Firestore database and **one** set of users.
+Test data you enter on staging will still be there after go-live, so clear it before
+launch.
+
+### One-time setup
+
+1. In the **Firebase console** for `zn-crew-contol-system`:
+   - **Build → Authentication → Get started**, then enable **Email/Password**.
+   - **Build → Firestore Database → Create database**:
+     - Database ID `(default)`
+     - Region: e.g. `africa-south1` (Johannesburg) or `europe-west1`. **This can't be
+       changed later.**
+     - Start in **production mode**. Our rules replace the defaults on the first deploy.
+   - **Build → Hosting → Get started**. Click through; no CLI is needed.
+2. Go to **Project settings → Service accounts → Generate new private key**. This downloads
+   a JSON file. Treat it like a password and never commit it.
+3. In GitHub, open **ACSprog/zn-crew-control-system → Settings → Secrets and variables →
+   Actions → New repository secret**:
+   - Name: `FIREBASE_SERVICE_ACCOUNT`
+   - Value: paste the **entire** JSON file contents.
+4. Open the pull request → **Actions** tab → **Deploy preview (staging)** → **Re-run**. You
+   can also just push any commit. The staging URL appears as a PR comment.
+5. Create your first admin user with the same JSON key:
+   ```
+   GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json npm run create-user -- \
+     --email=you@example.com --password=TempPass123! --name="Your Name" --role=SUPER_ADMIN
+   ```
+   Then sign in on the staging URL.
+
+## 6. AI assistant via Microsoft 365 Copilot Chat
 
 Copilot Chat costs nothing extra for staff signed in with a Microsoft 365 work account, and
 gives enterprise data protection: prompts and uploaded files aren't used to train models.
@@ -123,7 +196,7 @@ How it works:
 3. The user opens <https://m365copilot.com> with their work account (green shield), attaches
    the file and pastes the question.
 
-## 6. Other free options you can add later
+## 7. Other free options you can add later
 
 | Need | Free option | Notes |
 |---|---|---|
