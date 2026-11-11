@@ -1,3 +1,5 @@
+import { computeAuditSealV2 } from './auditSeal';
+import { currentPeriod } from './dates';
 import {
   CrewMember,
   Flight,
@@ -320,8 +322,16 @@ export function loadLeave(): LeaveTrainingRecord[] {
 }
 
 export function saveLeave(leave: LeaveTrainingRecord[]) {
-  localStorage.setItem(STORAGE_KEYS.LEAVE, JSON.stringify(leave));
-  syncLeaveToFirebase(leave);
+  // Stamp each record with the crew member's email so the database rules can
+  // let crew read only their own leave/sick/training records.
+  const crewList = loadCrew();
+  const emailById = new Map(crewList.map((c) => [c.id, (c.email || '').trim().toLowerCase()]));
+  const stamped = leave.map((l) => {
+    const email = emailById.get(l.crewId);
+    return email && l.crewEmail !== email ? { ...l, crewEmail: email } : l;
+  });
+  localStorage.setItem(STORAGE_KEYS.LEAVE, JSON.stringify(stamped));
+  syncLeaveToFirebase(stamped);
 }
 
 export function loadRules(): LegalityRules {
@@ -369,31 +379,26 @@ export function addAuditEntry(entry: Partial<AuditLog> & { user: string }) {
   const timestamp = now.toISOString();
   const previousSeal = logs.length > 0 ? (logs[0].immutableSeal || 'ZA-GENESIS-2026') : 'ZA-GENESIS-2026';
   
-  // Calculate deterministic cryptographic seal
-  const payload = `${timestamp}|${entry.user}|${entry.action || 'Action'}|${entry.details || 'Details'}|${previousSeal}`;
-  let hash = 0;
-  for (let i = 0; i < payload.length; i++) {
-    const char = payload.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
-  }
-  const h1 = Math.abs(hash).toString(16).padStart(8, '0');
-  const h2 = Math.abs((hash * 31) | 0).toString(16).padStart(8, '0');
-  const seal = `ZA-SEC-${h1}-${h2}`.toUpperCase();
+  // SHA-256 seal over the exact stored fields + the previous entry's seal.
+  // verifyAuditLogIntegrity() recomputes this to detect edited entries.
+  const action = entry.action || entry.reason || 'System Action';
+  const details = entry.details || entry.newAssignment || 'Operation executed';
+  const user = entry.user || 'OCC Dispatcher';
+  const seal = computeAuditSealV2({ timestamp, user, action, details, previousSeal });
 
   const newLog: AuditLog = {
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    user: entry.user || 'OCC Dispatcher',
+    user,
     userRole: entry.userRole || 'OCC',
     date: timestamp.split('T')[0],
     time: now.toTimeString().split(' ')[0],
-    action: entry.action || entry.reason || 'System Action',
-    details: entry.details || entry.newAssignment || 'Operation executed',
+    timestamp,
+    action,
+    details,
     severity: entry.severity || 'INFO',
     immutableSeal: seal,
     previousSeal: previousSeal,
-    ipAddress: '192.168.10.45 (LUN-OCC-LAN)',
-    verifiedIntegrity: true,
+    sealVersion: 2,
     ...(entry.flightNumber ? { flightNumber: entry.flightNumber } : {}),
     ...(entry.crewName ? { crewName: entry.crewName } : {}),
     ...(entry.previousAssignment ? { previousAssignment: entry.previousAssignment } : {}),
@@ -591,18 +596,31 @@ export function recordCrewAcknowledgment(
   crewId: string,
   staffNumber: string,
   crewName: string,
-  rosterPeriod: string = '2026-08'
+  rosterPeriod: string = currentPeriod()
 ): RosterAcknowledgment {
   const acks = loadAcknowledgments();
   const existingIdx = acks.findIndex((a) => a.crewId === crewId && a.rosterPeriod === rosterPeriod);
 
+  const crewEmail = (loadCrew().find((c) => c.id === crewId)?.email || '').trim().toLowerCase();
+  // Latest publication time of this crew member's duties in the period (if known).
+  const flightDates = new Map(loadFlights().map((f) => [f.id, f.date]));
+  const publishedTimes = loadAssignments()
+    .filter(
+      (a) =>
+        (a.captainId === crewId || a.firstOfficerId === crewId || (a.cabinCrewIds || []).includes(crewId)) &&
+        (flightDates.get(a.flightId) || '').startsWith(rosterPeriod) &&
+        a.publishedAt
+    )
+    .map((a) => a.publishedAt as string)
+    .sort();
   const newAck: RosterAcknowledgment = {
     id: existingIdx >= 0 ? acks[existingIdx].id : `ack-${crewId}-${Date.now()}`,
     crewId,
     staffNumber,
     crewName,
+    ...(crewEmail ? { crewEmail } : {}),
     rosterPeriod,
-    publishedAt: new Date(Date.now() - 3600 * 1000 * 24).toISOString(),
+    publishedAt: publishedTimes[publishedTimes.length - 1] || '',
     acknowledgedAt: new Date().toISOString(),
     status: 'ACKNOWLEDGED',
     revision: 1,

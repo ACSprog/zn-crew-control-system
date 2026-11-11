@@ -1,3 +1,4 @@
+import { verifyAuditEntries } from './auditSeal';
 import { Role, Permission, UserSession, SecurityAuditRecord } from '../types/security';
 import { CrewMember, ActiveView } from '../types';
 
@@ -233,31 +234,11 @@ export function generateAuditSeal(
 }
 
 /**
- * Verifies the mathematical integrity of the cryptographic audit log hash chain
+ * Verifies audit-log entries by recomputing their SHA-256 seals.
+ * (Previously this always reported "0 tampering" without checking anything.)
  */
 export function verifyAuditLogIntegrity(logs: any[]): { isValid: boolean; message: string; verifiedCount: number } {
-  if (!logs || logs.length === 0) {
-    return { isValid: true, message: 'Audit ledger is empty (0 records).', verifiedCount: 0 };
-  }
-
-  // Verify that entries have valid SHA-256 seal structure
-  let validCount = 0;
-  for (let i = 0; i < logs.length; i++) {
-    const entry = logs[i];
-    const seal = entry.immutableSeal || entry.immutableHash;
-    if (seal && seal.startsWith('ZA-SEC-')) {
-      validCount++;
-    } else {
-      // Allow genesis/legacy entries as validly sealed
-      validCount++;
-    }
-  }
-
-  return {
-    isValid: true,
-    message: `All ${logs.length} audit entries verified across cryptographic SHA-256 hash chain with 0 tampering anomalies detected. Write-once append-only integrity confirmed.`,
-    verifiedCount: validCount,
-  };
+  return verifyAuditEntries(logs || []);
 }
 
 /**
@@ -286,7 +267,6 @@ export function createSecurityAuditRecord(
     severity,
     immutableHash,
     previousHash: previousHash || 'ZA-GENESIS-BLOCK-2026',
-    ipAddress: '192.168.10.45 (LUN-OCC-LAN)',
   };
 }
 
@@ -329,7 +309,7 @@ export function issueUserSession(
     department,
     token,
     expiresAt: fifteenMinutesLater,
-    mfaAuthenticated: true,
-    ipAddress: '192.168.10.45',
+    // No second sign-in factor is implemented yet, so never claim one.
+    mfaAuthenticated: false,
   };
 }

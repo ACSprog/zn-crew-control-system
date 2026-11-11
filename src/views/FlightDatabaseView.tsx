@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Flight, AircraftType, FlightStatus, AircraftFleet } from '../types';
+import { todayISO } from '../utils/dates';
 import {
   Search,
   Plus,
@@ -59,7 +60,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
 
   const [formData, setFormData] = useState({
     flightNumber: 'ZN101',
-    date: '2026-08-15',
+    date: todayISO(),
     aircraft: 'Q400' as AircraftType,
     registration: fleet.length > 0 ? fleet[0].registration : '',
     departure: 'LUN',
@@ -76,7 +77,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
     setEditingFlight(null);
     setFormData({
       flightNumber: `ZN${Math.floor(100 + Math.random() * 900)}`,
-      date: '2026-08-15',
+      date: todayISO(),
       aircraft: defaultAircraft,
       registration: matchingFleet ? matchingFleet.registration : (fleet.length > 0 ? fleet[0].registration : ''),
       departure: 'LUN',

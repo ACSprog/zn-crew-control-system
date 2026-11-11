@@ -43,7 +43,7 @@ export interface SecurityAuditRecord {
   severity: 'INFO' | 'WARNING' | 'CRITICAL' | 'SECURITY';
   immutableHash: string; // SHA-256 integrity seal
   previousHash?: string; // Blockchain-style tamper-proof link
-  ipAddress: string;
+  ipAddress?: string;
 }
 
 export interface MfaVerificationState {

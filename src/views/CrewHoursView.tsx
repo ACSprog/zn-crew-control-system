@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { CrewMember, Flight, Assignment } from '../types';
+import { exportToCsv } from '../utils/exportCsv';
+import { todayISO } from '../utils/dates';
 import { Clock, Users, Calendar, Filter, Download, ArrowUpRight, CheckCircle2 } from 'lucide-react';
 
 interface CrewHoursViewProps {
@@ -30,6 +32,7 @@ export const CrewHoursView: React.FC<CrewHoursViewProps> = ({ crew, flights, ass
     crewAssignments.forEach((a) => {
       const flight = flights.find((f) => f.id === a.flightId);
       if (!flight) return;
+      if (String(flight.status || '').toUpperCase() === 'CANCELLED') return;
 
       if (daysBack) {
         const flightDate = new Date(flight.date);
@@ -37,8 +40,10 @@ export const CrewHoursView: React.FC<CrewHoursViewProps> = ({ crew, flights, ass
         if (diffDays < 0 || diffDays > daysBack) return;
       }
 
-      totalBlock += flight.blockHours || 1.5;
-      totalFlight += Math.max(0.5, (flight.blockHours || 1.5) - 0.2); // Flight Time calculation
+      const block = flight.blockHours || 0; // never invent hours for flights without block time
+      totalBlock += block;
+      // Flight (airborne) time is estimated as block time minus ~12 min taxi.
+      totalFlight += block > 0 ? Math.max(0, block - 0.2) : 0;
       flightsCount++;
     });
 
@@ -63,7 +68,7 @@ export const CrewHoursView: React.FC<CrewHoursViewProps> = ({ crew, flights, ass
       if (!flight) return;
       const d = new Date(flight.date);
       if (d.getMonth() === monthIndex) {
-        monthBlock += flight.blockHours || 1.5;
+        monthBlock += flight.blockHours || 0;
       }
     });
 
@@ -78,6 +83,29 @@ export const CrewHoursView: React.FC<CrewHoursViewProps> = ({ crew, flights, ass
     const matchesAircraft = aircraftFilter === 'ALL' || p.aircraft === aircraftFilter;
     return matchesRole && matchesAircraft;
   });
+
+  const handleExport = () => {
+    const people = activeTab === 'cc' || activeTab === 'cc_summary' ? cabinCrew : filteredPilots;
+    const rows = people.map((c) => {
+      const d7 = calculateCrewHours(c.id, 7);
+      const d14 = calculateCrewHours(c.id, 14);
+      const d28 = calculateCrewHours(c.id, 28);
+      const d365 = calculateCrewHours(c.id, 365);
+      return {
+        'Staff No': c.staffNumber,
+        Name: c.name,
+        Role: c.role,
+        Fleet: c.aircraft,
+        'Block hrs 7d': d7.blockHours,
+        'Block hrs 14d': d14.blockHours,
+        'Block hrs 28d': d28.blockHours,
+        'Block hrs 365d': d365.blockHours,
+        'Sectors 28d': d28.flightsCount,
+      };
+    });
+    if (rows.length === 0) return;
+    exportToCsv(`Zambia_Airways_Crew_Hours_${todayISO()}.csv`, rows);
+  };
 
   const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -161,8 +189,11 @@ export const CrewHoursView: React.FC<CrewHoursViewProps> = ({ crew, flights, ass
             </select>
           </div>
 
-          <button className="px-3 py-1.5 bg-[#2E2C2B] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 hover:bg-black cursor-pointer">
-            <Download className="w-3.5 h-3.5" /> Export Excel
+          <button
+            onClick={handleExport}
+            className="px-3 py-1.5 bg-[#2E2C2B] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 hover:bg-black cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" /> Export Excel (CSV)
           </button>
         </div>
       )}

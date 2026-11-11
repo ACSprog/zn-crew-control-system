@@ -25,8 +25,11 @@ export const DocumentTrackerView: React.FC<DocumentTrackerViewProps> = ({ crew, 
   const now = new Date();
 
   const getDocStatus = (dateStr?: string) => {
+    // Missing or unreadable dates are treated as expired (never assumed valid).
     if (!dateStr) return { days: 0, status: 'EXPIRED' as const };
-    const diff = new Date(dateStr).getTime() - now.getTime();
+    const t = new Date(dateStr).getTime();
+    if (isNaN(t)) return { days: 0, status: 'EXPIRED' as const };
+    const diff = t - now.getTime();
     const days = Math.ceil(diff / (1000 * 3600 * 24));
     if (days <= 0) return { days, status: 'EXPIRED' as const };
     if (days <= 60) return { days, status: 'EXPIRING_SOON' as const };

@@ -40,9 +40,9 @@ export const FatigueMonitoringView: React.FC<FatigueMonitoringViewProps> = ({
       const flightDate = new Date(flight.date);
       const diffDays = (now.getTime() - flightDate.getTime()) / (1000 * 3600 * 24);
 
-      if (diffDays >= 0 && diffDays <= 7) block7 += flight.blockHours || 1.5;
-      if (diffDays >= 0 && diffDays <= 14) block14 += flight.blockHours || 1.5;
-      if (diffDays >= 0 && diffDays <= 30) block30 += flight.blockHours || 1.5;
+      if (diffDays >= 0 && diffDays <= 7) block7 += flight.blockHours || 0;
+      if (diffDays >= 0 && diffDays <= 14) block14 += flight.blockHours || 0;
+      if (diffDays >= 0 && diffDays <= 30) block30 += flight.blockHours || 0;
 
       flightsCount++;
       dutiesCount++;

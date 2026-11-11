@@ -12,7 +12,7 @@ interface SettingsViewProps {
   onExportBackup?: () => void;
   onImportBackup?: (jsonStr: string) => void;
   onClearAllData?: () => void;
-  onResetSampleData: () => void;
+  onResetSampleData?: () => void;
   canResetData?: boolean;
 }
 
@@ -572,6 +572,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             )}
 
+{onResetSampleData && (
             <button
               type="button"
               onClick={onResetSampleData}
@@ -580,6 +581,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <RefreshCw className="w-4 h-4 text-slate-600" />
               <span>RESTORE SAMPLE DEMO DATA</span>
             </button>
+            )}
           </div>
         </div>
       </div>

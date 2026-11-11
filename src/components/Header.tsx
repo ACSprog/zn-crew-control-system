@@ -25,7 +25,7 @@ import {
   Menu,
 } from 'lucide-react';
 import { PasswordModal } from './PasswordModal';
-import { loadSystemNotifications, markNotificationAsRead } from '../utils/storage';
+import { markInAppNotificationRead, subscribeToMyNotifications } from '../utils/inAppNotifications';
 
 interface HeaderProps {
   activeView: ActiveView;
@@ -176,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
   const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState(false);
-  const [notifications, setNotifications] = useState<SystemNotification[]>(loadSystemNotifications());
+  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [authModalTargetUser, setAuthModalTargetUser] = useState<SystemUser | null>(null);
   const [isJustSaved, setIsJustSaved] = useState(false);
 
@@ -216,15 +216,19 @@ export const Header: React.FC<HeaderProps> = ({
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
+  // Live notifications for the signed-in user (their own + broadcasts),
+  // shared across devices via Firestore.
   useEffect(() => {
-    setNotifications(loadSystemNotifications());
-  }, [activeView]);
+    const unsubscribe = subscribeToMyNotifications(setNotifications);
+    return unsubscribe;
+  }, [currentUser?.email]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   const handleMarkAllRead = () => {
-    notifications.forEach((n) => markNotificationAsRead(n.id));
-    setNotifications(loadSystemNotifications());
+    notifications
+      .filter((n) => !n.read)
+      .forEach((n) => markInAppNotificationRead(n.id).catch(() => undefined));
   };
 
   const handleSaveClick = () => {
@@ -451,8 +455,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <div
                       key={notif.id}
                       onClick={() => {
-                        markNotificationAsRead(notif.id);
-                        setNotifications(loadSystemNotifications());
+                        markInAppNotificationRead(notif.id).catch(() => undefined);
                         if (onNavigate && notif.type === 'ROSTER_PUBLISHED') {
                           onNavigate('portal');
                           setIsNotifDropdownOpen(false);

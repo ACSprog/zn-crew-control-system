@@ -11,6 +11,9 @@ import {
   orderBy,
   limit,
   documentId,
+  where,
+  type Query,
+  type DocumentData,
   doc,
   setDoc,
   onSnapshot,
@@ -307,11 +310,14 @@ function subscribeCollection<T>(
   onStatus: () => void,
   onError: (name: string, err: unknown) => void,
   idField: string = 'id',
-  maxDocs?: number
+  maxDocs?: number,
+  customSource?: Query<DocumentData>
 ): () => void {
-  const source = maxDocs
-    ? query(collection(db, collectionName), orderBy(documentId(), 'desc'), limit(maxDocs))
-    : collection(db, collectionName);
+  const source =
+    customSource ??
+    (maxDocs
+      ? query(collection(db, collectionName), orderBy(documentId(), 'desc'), limit(maxDocs))
+      : collection(db, collectionName));
   return onSnapshot(
     source,
     (snap) => {
@@ -419,7 +425,17 @@ export async function pushAllDataToFirebase(data: {
   ]);
 }
 
-export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks): () => void {
+/**
+ * Crew logins (FLIGHT_CREW / PILOT_CABIN) may only read their own crew
+ * record, leave and acknowledgements (see firestore.rules). Whole-collection
+ * listeners would be rejected, so in crew scope those listeners are narrowed
+ * to the crew member's own documents and the audit log isn't loaded.
+ */
+export interface RealtimeScope {
+  crewEmail: string;
+}
+
+export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks, scope?: RealtimeScope): () => void {
   callbacks.onSyncStatusChange?.('connecting');
 
   let connectedCount = 0;
@@ -439,14 +455,53 @@ export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks): () => voi
     }
   };
 
-  const unsubCrew = subscribeCollection<CrewMember>('crew', callbacks.onCrewUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubFlights = subscribeCollection<Flight>('flights', callbacks.onFlightsUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubAssignments = subscribeCollection<Assignment>('assignments', callbacks.onAssignmentsUpdate, updateConnectionStatus, handleSnapshotError);
-  const unsubLeave = subscribeCollection<LeaveTrainingRecord>('leave', callbacks.onLeaveUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubFleet = subscribeCollection<AircraftFleet>('fleet', callbacks.onFleetUpdate, updateConnectionStatus, handleSnapshotError, 'registration');
   const unsubUsers = subscribeCollection<SystemUser>('users', callbacks.onUsersUpdate, updateConnectionStatus, handleSnapshotError);
-  const unsubAudit = subscribeCollection<AuditLog>('auditLogs', callbacks.onAuditLogsUpdate, updateConnectionStatus, handleSnapshotError, 'id', AUDIT_LOG_LIVE_LIMIT);
-  const unsubAcks = subscribeCollection<RosterAcknowledgment>('acknowledgments', callbacks.onAcknowledgmentsUpdate, updateConnectionStatus, handleSnapshotError);
+
+  let unsubCrew: () => void;
+  let unsubLeave: () => void = () => {};
+  let unsubAudit: () => void = () => {};
+  let unsubAcks: () => void = () => {};
+
+  if (scope) {
+    const email = scope.crewEmail.trim().toLowerCase();
+    let currentCrewId = '';
+    callbacks.onAuditLogsUpdate?.([]);
+    unsubCrew = subscribeCollection<CrewMember>(
+      'crew',
+      (items) => {
+        callbacks.onCrewUpdate?.(items);
+        const crewId = items[0]?.id || '';
+        if (crewId === currentCrewId) return;
+        currentCrewId = crewId;
+        unsubLeave();
+        unsubAcks();
+        if (!crewId) {
+          callbacks.onLeaveUpdate?.([]);
+          callbacks.onAcknowledgmentsUpdate?.([]);
+          unsubLeave = () => {};
+          unsubAcks = () => {};
+          return;
+        }
+        unsubLeave = subscribeCollection<LeaveTrainingRecord>('leave', callbacks.onLeaveUpdate, updateConnectionStatus, handleSnapshotError, 'id', undefined,
+          query(collection(db, 'leave'), where('crewEmail', '==', email)));
+        unsubAcks = subscribeCollection<RosterAcknowledgment>('acknowledgments', callbacks.onAcknowledgmentsUpdate, updateConnectionStatus, handleSnapshotError, 'id', undefined,
+          query(collection(db, 'acknowledgments'), where('crewEmail', '==', email)));
+      },
+      updateConnectionStatus,
+      handleSnapshotError,
+      'id',
+      undefined,
+      query(collection(db, 'crew'), where('email', '==', email))
+    );
+  } else {
+    unsubCrew = subscribeCollection<CrewMember>('crew', callbacks.onCrewUpdate, updateConnectionStatus, handleSnapshotError);
+    unsubLeave = subscribeCollection<LeaveTrainingRecord>('leave', callbacks.onLeaveUpdate, updateConnectionStatus, handleSnapshotError);
+    unsubAudit = subscribeCollection<AuditLog>('auditLogs', callbacks.onAuditLogsUpdate, updateConnectionStatus, handleSnapshotError, 'id', AUDIT_LOG_LIVE_LIMIT);
+    unsubAcks = subscribeCollection<RosterAcknowledgment>('acknowledgments', callbacks.onAcknowledgmentsUpdate, updateConnectionStatus, handleSnapshotError);
+  }
 
   const unsubRules = onSnapshot(
     doc(db, 'config', 'legalityRules'),

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { CrewMember, Flight, AircraftType } from '../types';
+import { CrewMember, Flight, AircraftType, Assignment } from '../types';
+import { computePilotRecency } from '../utils/recency';
 import {
   Clock,
   Search,
@@ -21,6 +22,7 @@ import { exportToCsv } from '../utils/exportCsv';
 interface RecencyTrackerViewProps {
   crew: CrewMember[];
   flights: Flight[];
+  assignments: Assignment[];
   onUpdateCrew: (crewMember: CrewMember) => void;
 }
 
@@ -42,6 +44,7 @@ interface CustomRecencyEntry {
 export const RecencyTrackerView: React.FC<RecencyTrackerViewProps> = ({
   crew,
   flights,
+  assignments,
   onUpdateCrew,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -57,40 +60,30 @@ export const RecencyTrackerView: React.FC<RecencyTrackerViewProps> = ({
   // Filter only flight deck crew (Captains and First Officers)
   const pilots = crew.filter((c) => c.role === 'Captain' || c.role === 'First Officer');
 
-  // Compute recency records based on pilots
+  // Recency from real roster data: rostered sectors in the last 90 days
+  // (+ any manual landings recorded on the crew file). See utils/recency.ts.
   const recencyRecords: CustomRecencyEntry[] = pilots.map((p) => {
-    // If flightsCount is tracked on crew, use it, or calculate from flights
-    const count = p.flightsCount !== undefined ? p.flightsCount : 0;
-    const takeoffs = count >= 3 ? count : count;
-    const landings = count >= 3 ? count : count;
-    
-    // Status logic: 3+ is current, 1-2 is expiring, 0 is not current
-    let status: 'CURRENT' | 'EXPIRING' | 'NOT_CURRENT' = 'NOT_CURRENT';
-    let daysRemaining = 0;
-    
-    if (landings >= 3) {
-      status = 'CURRENT';
-      daysRemaining = 75; // Average days remaining in 90-day rolling window
-    } else if (landings > 0) {
-      status = 'EXPIRING';
-      daysRemaining = 12;
-    } else {
-      status = 'NOT_CURRENT';
-      daysRemaining = 0;
-    }
-
+    const r = computePilotRecency(p, flights, assignments);
+    const lastFlight = r.lastFlightNumber
+      ? flights.find((f) => f.flightNumber === r.lastFlightNumber && f.date === r.lastFlightDate)
+      : undefined;
+    const status: CustomRecencyEntry['status'] = !r.isCurrent
+      ? 'NOT_CURRENT'
+      : r.daysRemaining <= 14
+        ? 'EXPIRING'
+        : 'CURRENT';
     return {
       crewId: p.id,
       crewName: p.name,
       staffNumber: p.staffNumber,
       role: p.role,
       aircraft: p.aircraft,
-      lastFlightNumber: landings > 0 ? 'ZN201' : 'None',
-      lastSector: landings > 0 ? (p.aircraft === 'B737' ? 'LUN-JNB' : 'LUN-NLA') : 'N/A',
-      lastFlightDate: landings > 0 ? '2026-08-10' : 'N/A',
-      takeoffs90Days: takeoffs,
-      landings90Days: landings,
-      daysRemaining,
+      lastFlightNumber: r.lastFlightNumber || 'None',
+      lastSector: lastFlight ? `${lastFlight.departure}-${lastFlight.arrival}` : 'N/A',
+      lastFlightDate: r.lastFlightDate || 'N/A',
+      takeoffs90Days: r.takeoffs90,
+      landings90Days: r.landings90,
+      daysRemaining: r.daysRemaining,
       status,
     };
   });
@@ -130,9 +123,12 @@ export const RecencyTrackerView: React.FC<RecencyTrackerViewProps> = ({
     const targetCrew = crew.find((c) => c.id === selectedCrewId);
     if (!targetCrew) return;
 
+    // Stored as manual landings dated on the entry date; they count toward
+    // recency for 90 days from that date, on top of rostered sectors.
     const updated: CrewMember = {
       ...targetCrew,
-      flightsCount: customLandings,
+      recencyManualLandings: customLandings,
+      recencyManualDate: customFlightDate,
     };
     onUpdateCrew(updated);
     setIsModalOpen(false);

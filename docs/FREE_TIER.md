@@ -183,7 +183,19 @@ launch.
    ```
    Then sign in on the staging URL.
 
-## 6. AI assistant via Microsoft 365 Copilot Chat
+## 6. Crew logins (pilots and cabin crew)
+
+A crew member signs in with a `FLIGHT_CREW` or `PILOT_CABIN` account. They then see only
+their own crew record, leave records, acknowledgements and roster.
+
+- **The link is the email address.** The **email on the crew record** must be the same address
+  they sign in with. Emails are stored in lower case automatically.
+- **Unlinked logins:** if no crew record has that email, the Crew Portal says the login isn't
+  linked yet. It does not show someone else's roster.
+- **In-app notifications** (the 🔔) are stored in Firestore, so they reach the crew member's
+  own device. Messages to a crew member with no email on file fail and are reported as failed.
+
+## 6b. AI assistant via Microsoft 365 Copilot Chat
 
 Copilot Chat costs nothing extra for staff signed in with a Microsoft 365 work account, and
 gives enterprise data protection: prompts and uploaded files aren't used to train models.

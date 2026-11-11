@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet, AuditLog } from './types';
+import { currentPeriod } from './utils/dates';
+import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
   getCrew,
   saveCrew,
@@ -14,7 +16,6 @@ import {
   loadFleet,
   saveFleet,
   clearAllData,
-  resetToSampleData,
   loadUsers,
   saveUsers,
   loadCurrentUser,
@@ -245,6 +246,7 @@ export function App() {
   // them before login just produces permission errors that never clear).
   // Restarts automatically whenever isLoggedOut flips, so logging out and
   // back in (possibly as a different user) gets a fresh subscription.
+  const isCrewRole = currentUser?.role === 'FLIGHT_CREW' || currentUser?.role === 'PILOT_CABIN';
   useEffect(() => {
     if (isLoggedOut) return;
 
@@ -298,19 +300,26 @@ export function App() {
           localStorage.setItem('zambia_airways_audit', JSON.stringify(items));
         }
       },
-    });
+      // Roster acknowledgements from crew devices (previously never loaded,
+      // so OCC couldn't see who had acknowledged).
+      onAcknowledgmentsUpdate: (items) => {
+        if (Array.isArray(items)) {
+          localStorage.setItem('zambia_airways_acknowledgments', JSON.stringify(items));
+        }
+      },
+    }, isCrewRole && currentUser?.email ? { crewEmail: currentUser.email } : undefined);
 
     return () => {
       unsubscribe();
     };
-  }, [isLoggedOut]);
+  }, [isLoggedOut, isCrewRole, currentUser?.email]);
 
   // Proactively cache critical roster snapshot in Service Worker & Offline Storage
   useEffect(() => {
     if (crew.length > 0 || flights.length > 0 || assignments.length > 0) {
       cacheCriticalRoster({
         id: 'latest_roster_snapshot',
-        period: '2026-08',
+        period: currentPeriod(),
         timestamp: new Date().toISOString(),
         flights,
         crew,
@@ -409,6 +418,8 @@ export function App() {
   const handleAddCrew = (newMember: Omit<CrewMember, 'id'>) => {
     const created: CrewMember = {
       ...newMember,
+      // Stored lower-case so it matches the sign-in email (crew portal access rule).
+      email: (newMember.email || '').trim().toLowerCase(),
       id: `crew-${Date.now()}`,
     };
     const updated = [...crew, created];
@@ -417,7 +428,8 @@ export function App() {
     showToast(`Added crew member ${created.name} (${created.staffNumber})`);
   };
 
-  const handleUpdateCrew = (updatedMember: CrewMember) => {
+  const handleUpdateCrew = (rawMember: CrewMember) => {
+    const updatedMember: CrewMember = { ...rawMember, email: (rawMember.email || '').trim().toLowerCase() };
     const updated = crew.map((c) => (c.id === updatedMember.id ? updatedMember : c));
     setCrewState(updated);
     saveCrew(updated);
@@ -497,6 +509,7 @@ export function App() {
 
   const handleUpdateAssignment = (updatedAssignment: Assignment) => {
     const existingIdx = assignments.findIndex((a) => a.flightId === updatedAssignment.flightId);
+    const previousAssignment = existingIdx >= 0 ? assignments[existingIdx] : undefined;
     let updated: Assignment[];
     if (existingIdx >= 0) {
       updated = [...assignments];
@@ -507,6 +520,13 @@ export function App() {
     setAssignmentsState(updated);
     saveAssignments(updated);
     showToast(`Updated crew assignment for flight`);
+    // Notify affected crew if this flight's roster was already published
+    // (honours the "Roster change" automated trigger toggle).
+    autoNotifyRosterChange(previousAssignment, updatedAssignment, crew, flights, currentUser?.name || 'OCC')
+      .then((r) => {
+        if (!r.skipped) showToast(`Roster change notifications: ${r.sent} sent, ${r.failed} failed`);
+      })
+      .catch((err) => console.warn('Roster change notification failed', err));
   };
 
   const handleAddLeaveRecord = (newRec: Omit<LeaveTrainingRecord, 'id'>) => {
@@ -589,16 +609,6 @@ export function App() {
     showToast(`Deleted system account: ${target?.name || userId}`);
   };
 
-  const handleResetData = () => {
-    resetToSampleData();
-    setCrewState(getCrew());
-    setFlightsState(getFlights());
-    setAssignmentsState(getAssignments());
-    setLeaveRecordsState(getLeaveRecords());
-    setFleetState(loadFleet());
-    setRulesState(getRules());
-    showToast('Reset data to Zambia Airways OCC default sample dataset');
-  };
 
   // Batch Flight Import with Automatic Roster Generation Trigger
   const handleImportFlightsWithAutoRoster = (imported: Flight[]) => {
@@ -728,7 +738,6 @@ export function App() {
           activeView={activeView}
           onNavigate={setActiveView}
           onGenerateRoster={handleQuickGenerateRoster}
-          onResetData={handleResetData}
           onSaveAllData={handleSaveAllSystemData}
           onLogout={handleLogout}
           onChangePasswordClick={() => setIsChangePasswordOpen(true)}
@@ -896,7 +905,6 @@ export function App() {
               onExportBackup={handleExportBackup}
               onImportBackup={handleImportBackup}
               onClearAllData={handleClearAllData}
-              onResetSampleData={handleResetData}
               canResetData={currentUser.permissions.canResetData}
             />
           )}
@@ -925,7 +933,6 @@ export function App() {
               }}
               onImportFleet={handleImportFleet}
               onClearAllData={handleClearAllData}
-              onResetSampleData={handleResetData}
               onRunAutoScheduler={handleQuickGenerateRoster}
             />
           )}
@@ -978,6 +985,7 @@ export function App() {
             <RecencyTrackerView
               crew={crew}
               flights={flights}
+              assignments={assignments}
               onUpdateCrew={handleUpdateCrew}
             />
           )}

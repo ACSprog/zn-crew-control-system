@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
-import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import admin from 'firebase-admin';
 import { gatewayManager } from './src/server/providers/gatewayManager';
@@ -77,87 +76,8 @@ async function startServer() {
     };
   }
 
-  // Initialize Gemini AI client server-side
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-
-  // API Route: AI Assistant Endpoint
-    app.post('/api/chat', requireAuth, async (req, res) => {
-    try {
-      const { message, context } = req.body;
-
-      if (!message) {
-        return res.status(400).json({ error: 'Message is required' });
-      }
-
-      const crewData = context?.crew || [];
-      const flightsData = context?.flights || [];
-      const assignmentsData = context?.assignments || [];
-      const leaveData = context?.leave || [];
-      const fleetData = context?.fleet || [];
-
-      const systemInstruction = `
-You are the Zambia Airways Crew Control Operations Assistant (Gemini powered).
-You assist flight dispatchers and crew schedulers with operational queries about crew availability, flight schedules, legality restrictions, crew utilization, and open flight positions.
-
-You have the COMPLETE current operational dataset below — every crew member, flight, assignment, leave record and fleet aircraft currently in the system. Use it to answer specific questions precisely (e.g. by name, flight number, or tail number), not just in generalities. If something isn't in this data, say so plainly rather than guessing.
-
-CURRENT OCC SYSTEM DATA (JSON):
-
-RULES:
-${JSON.stringify(context?.rules || {})}
-
-CREW (${crewData.length} records):
-${JSON.stringify(crewData)}
-
-FLIGHTS (${flightsData.length} records):
-${JSON.stringify(flightsData)}
-
-ASSIGNMENTS (${assignmentsData.length} records):
-${JSON.stringify(assignmentsData)}
-
-LEAVE / TRAINING RECORDS (${leaveData.length} records):
-${JSON.stringify(leaveData)}
-
-FLEET (${fleetData.length} aircraft):
-${JSON.stringify(fleetData)}
-
-IMPORTANT SAFETY & COMPLIANCE RULE:
-- You must NEVER directly modify database assignments or guarantee an assignment.
-- All crew assignment recommendations you make MUST explicitly state: "Recommendation subject to deterministic FTL Legality Engine validation."
-- Format your response with clear markdown, bullet points, and key statistics where relevant.
-- Be concise, clear, and operational in tone (Airline Operations Control Center style).
-`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
-        contents: message,
-        config: {
-          systemInstruction,
-          temperature: 0.2,
-        },
-      });
-
-      const replyText = response.text || 'No response generated from Gemini.';
-
-      res.json({
-        reply: replyText,
-        verifiedByEngine: true,
-      });
-    } catch (err: any) {
-      console.error('Gemini API Error:', err);
-      res.status(500).json({
-        error: 'Failed to process assistant request',
-        details: err?.message || 'Server error',
-      });
-    }
-  });
+  // (Gemini AI /api/chat endpoint removed: the AI assistant now uses the
+  //  free Microsoft 365 Copilot Chat handoff in the browser.)
 
   // ==========================================
   // NOTIFICATION & COMMUNICATION API ENDPOINTS

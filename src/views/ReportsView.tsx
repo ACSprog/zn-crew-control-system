@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, AircraftFleet } from '../types';
+import { periodLabel } from '../utils/dates';
 import { exportToCsv } from '../utils/exportCsv';
 import {
   FileText,
@@ -37,6 +38,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   // Calculations for reports
   const totalFlights = flights.length;
+  // Period covered by the flights in the database (first – last month).
+  const flightMonths = flights.map((f) => (f.date || '').slice(0, 7)).filter(Boolean).sort();
+  const reportPeriodLabel =
+    flightMonths.length === 0
+      ? 'No flights loaded'
+      : flightMonths[0] === flightMonths[flightMonths.length - 1]
+        ? periodLabel(flightMonths[0])
+        : `${periodLabel(flightMonths[0])} – ${periodLabel(flightMonths[flightMonths.length - 1])}`;
   const assignedFlightsCount = assignments.filter((a) => a.status === 'ASSIGNED').length;
   const unassignedFlightsCount = assignments.filter((a) => a.status !== 'ASSIGNED').length;
 
@@ -210,7 +219,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   ZAMBIA AIRWAYS - MONTHLY ROSTER SUMMARY REPORT
                 </h3>
                 <p className="text-xs text-slate-500 font-mono">
-                  Period: August 2026 • Total Flights: {totalFlights} • Coverage:{' '}
+                  Period: {reportPeriodLabel} • Total Flights: {totalFlights} • Coverage:{' '}
                   {Math.round((assignedFlightsCount / (totalFlights || 1)) * 100)}%
                 </p>
               </div>

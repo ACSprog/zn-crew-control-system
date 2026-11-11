@@ -82,6 +82,10 @@ export interface CrewMember {
   nightDuties?: number;
   dutiesCount?: number;
   flightsCount?: number;
+  /** Manually recorded landings (e.g. simulator / non-rostered sectors) for recency. */
+  recencyManualLandings?: number;
+  /** Date (YYYY-MM-DD) the manual landings above were made; they count for 90 days from it. */
+  recencyManualDate?: string;
 }
 
 export interface AircraftFleet {
@@ -166,6 +170,8 @@ export interface LeaveTrainingRecord {
   id: string;
   crewId: string;
   crewName?: string;
+  /** Crew member's sign-in email (lower case), so they can read only their own records. */
+  crewEmail?: string;
   type: LeaveTrainingType;
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
@@ -280,6 +286,10 @@ export interface AuditLog {
   reason?: string;
   immutableSeal?: string;
   previousSeal?: string;
+  /** Full ISO timestamp the seal was computed over (seal v2+). */
+  timestamp?: string;
+  /** 2 = SHA-256 seal that can be re-verified. Older entries have no version. */
+  sealVersion?: number;
   ipAddress?: string;
   verifiedIntegrity?: boolean;
 }
@@ -452,6 +462,8 @@ export interface RosterAcknowledgment {
   crewId: string;
   staffNumber: string;
   crewName: string;
+  /** Crew member's sign-in email (lower case); used by security rules. */
+  crewEmail?: string;
   rosterPeriod: string; // e.g. "2026-08"
   publishedAt: string;
   acknowledgedAt?: string;
