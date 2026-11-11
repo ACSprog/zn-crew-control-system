@@ -8,6 +8,8 @@ import {
   AircraftFleet,
   LegalityRules,
 } from '../types';
+import { todayISO } from '../utils/dates';
+import { computePilotRecency } from '../utils/recency';
 import { getOpenAssignmentsSummary, loadAcknowledgments } from '../utils/storage';
 import { FLEET_REGISTRATIONS } from '../utils/dutyTimeCalculator';
 import { scanRosterLegalityConflicts } from '../utils/legalityEngine';
@@ -143,7 +145,59 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const lineCheckDue = crew.filter((c) => calculateDaysLeft(c.lineCheck) <= 60).length;
   const recurrentTrainingDue = crew.filter((c) => c.trainingStatus === 'DUE_SOON' || c.trainingStatus === 'EXPIRED').length;
   const simulatorDue = leaveRecords.filter((l) => l.type === 'Simulator' && !l.approved).length;
-  const recencyExpiring = crew.filter((c) => c.role === 'Captain' || c.role === 'First Officer').filter((c) => (c.flightsCount || 0) < 3).length;
+  const recencyExpiring = crew
+    .filter((c) => c.role === 'Captain' || c.role === 'First Officer')
+    .filter((c) => {
+      const r = computePilotRecency(c, flights, assignments);
+      return !r.isCurrent || r.daysRemaining <= 14;
+    }).length;
+
+  // Rolling 7-day block hours, averaged per crew group, for each of the last 7 days.
+  const trendSeries = useMemo(() => {
+    const flightById = new Map(flights.map((f) => [f.id, f]));
+    const deckIds = new Set(crew.filter((c) => c.role === 'Captain' || c.role === 'First Officer').map((c) => c.id));
+    const cabinIds = new Set(crew.filter((c) => c.role === 'Cabin Crew' || c.role === 'Senior Cabin Crew').map((c) => c.id));
+    // hours flown per crew per date
+    const perCrewDate = new Map<string, number>();
+    assignments.forEach((a) => {
+      const f = flightById.get(a.flightId);
+      if (!f || String(f.status || '').toUpperCase() === 'CANCELLED') return;
+      const ids = [a.captainId, a.firstOfficerId, ...(a.cabinCrewIds || [])].filter(Boolean) as string[];
+      ids.forEach((id) => {
+        const k = `${id}|${f.date}`;
+        perCrewDate.set(k, (perCrewDate.get(k) || 0) + (f.blockHours || 0));
+      });
+    });
+    const rolling = (ids: Set<string>, end: Date) => {
+      if (ids.size === 0) return 0;
+      let total = 0;
+      ids.forEach((id) => {
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(end.getFullYear(), end.getMonth(), end.getDate() - i);
+          total += perCrewDate.get(`${id}|${todayISO(d)}`) || 0;
+        }
+      });
+      return total / ids.size;
+    };
+    const toY = (h: number) => Math.max(5, 110 - (Math.min(h, 32) / 30) * 85);
+    const today = new Date();
+    const points = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (6 - i));
+      const deck = rolling(deckIds, d);
+      const cabin = rolling(cabinIds, d);
+      return {
+        x: 50 + i * 100,
+        y1: toY(deck),
+        y2: toY(cabin),
+        deck,
+        cabin,
+        date: todayISO(d),
+        label: d.toLocaleDateString('en-GB', { weekday: 'short' }),
+      };
+    });
+    const path = (key: 'y1' | 'y2') => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y1 !== undefined ? p[key] : 0}`).join(' ');
+    return { points, deckPath: path('y1'), cabinPath: path('y2') };
+  }, [crew, flights, assignments]);
 
   // Fleet Card metrics
   const q400Flights = flights.filter((f) => f.aircraft === 'Q400');
@@ -694,7 +748,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              {/* Simulated SVG Trend Chart */}
+              {/* Rolling 7-day block-hours trend (computed from assignments) */}
               <div className="h-44 w-full relative pt-2 pb-6">
                 <svg className="w-full h-full overflow-visible" viewBox="0 0 700 120" preserveAspectRatio="none">
                   {/* Grid Lines */}
@@ -706,43 +760,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <line x1="0" y1="25" x2="700" y2="25" stroke="#f43f5e" strokeWidth="2" strokeDasharray="6 3" />
                   <text x="690" y="20" fill="#f43f5e" fontSize="10" fontFamily="monospace" textAnchor="end">30h Max Limit</text>
 
-                  {/* Flight Deck Trend Area & Path (Orange) */}
-                  <path
-                    d="M 50 100 Q 150 85 250 70 T 450 50 T 650 35 L 650 110 L 50 110 Z"
-                    fill="rgba(243, 124, 28, 0.15)"
-                  />
-                  <path
-                    d="M 50 100 Q 150 85 250 70 T 450 50 T 650 35"
-                    fill="none"
-                    stroke="#F37C1C"
-                    strokeWidth="3"
-                  />
+                  {/* Real data: rolling 7-day block hours per crew group (see trendSeries). */}
+                  <path d={`${trendSeries.deckPath} L 650 110 L 50 110 Z`} fill="rgba(243, 124, 28, 0.15)" />
+                  <path d={trendSeries.deckPath} fill="none" stroke="#F37C1C" strokeWidth="3" />
+                  <path d={`${trendSeries.cabinPath} L 650 110 L 50 110 Z`} fill="rgba(59, 130, 246, 0.12)" />
+                  <path d={trendSeries.cabinPath} fill="none" stroke="#3b82f6" strokeWidth="3" />
 
-                  {/* Cabin Crew Trend Area & Path (Blue) */}
-                  <path
-                    d="M 50 105 Q 150 92 250 80 T 450 62 T 650 48 L 650 110 L 50 110 Z"
-                    fill="rgba(59, 130, 246, 0.12)"
-                  />
-                  <path
-                    d="M 50 105 Q 150 92 250 80 T 450 62 T 650 48"
-                    fill="none"
-                    stroke="#3b82f6"
-                    strokeWidth="3"
-                  />
-
-                  {/* Data Points */}
-                  {[
-                    { x: 50, y1: 100, y2: 105, label: 'Mon' },
-                    { x: 150, y1: 85, y2: 92, label: 'Tue' },
-                    { x: 250, y1: 70, y2: 80, label: 'Wed' },
-                    { x: 350, y1: 60, y2: 70, label: 'Thu' },
-                    { x: 450, y1: 50, y2: 62, label: 'Fri' },
-                    { x: 550, y1: 42, y2: 55, label: 'Sat' },
-                    { x: 650, y1: 35, y2: 48, label: 'Sun' },
-                  ].map((pt, idx) => (
+                  {trendSeries.points.map((pt, idx) => (
                     <g key={idx}>
-                      <circle cx={pt.x} cy={pt.y1} r="4" fill="#F37C1C" stroke="#ffffff" strokeWidth="1.5" />
-                      <circle cx={pt.x} cy={pt.y2} r="4" fill="#3b82f6" stroke="#ffffff" strokeWidth="1.5" />
+                      <circle cx={pt.x} cy={pt.y1} r="4" fill="#F37C1C" stroke="#ffffff" strokeWidth="1.5">
+                        <title>{`${pt.date}: flight deck avg ${pt.deck.toFixed(1)}h`}</title>
+                      </circle>
+                      <circle cx={pt.x} cy={pt.y2} r="4" fill="#3b82f6" stroke="#ffffff" strokeWidth="1.5">
+                        <title>{`${pt.date}: cabin crew avg ${pt.cabin.toFixed(1)}h`}</title>
+                      </circle>
                       <text x={pt.x} y="118" fill="#94a3b8" fontSize="10" fontFamily="monospace" textAnchor="middle">
                         {pt.label}
                       </text>
@@ -907,7 +938,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="text-2xl font-black text-emerald-700 font-mono mt-1">
               {openSummary.fullyAssignedSectors}
             </div>
-            <span className="text-[10px] text-emerald-600 font-mono">100% Compliant</span>
+            <span className="text-[10px] text-emerald-600 font-mono">Fully crewed sectors</span>
           </div>
         </div>
       </div>

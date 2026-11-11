@@ -51,7 +51,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ auditLogs, onClearLo
       `"${l.action || l.reason || 'Assignment Action'}"`,
       `"${l.details || l.newAssignment || ''}"`,
       l.severity || 'INFO',
-      `"${l.immutableSeal || 'GEN-SHA256'}"`,
+      `"${l.immutableSeal || ''}"`,
       `"${l.previousSeal || 'GENESIS'}"`,
     ]);
 
@@ -132,8 +132,8 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ auditLogs, onClearLo
             <div>
               <p className="text-xs font-bold font-mono">
                 {verificationResult.isValid
-                  ? 'SHA-256 Hash Chain Integrity: VERIFIED 100% VALID'
-                  : 'Integrity Check Warning'}
+                  ? 'Seal check passed: no altered entries found'
+                  : 'Seal check FAILED: some entries do not match their seal'}
               </p>
               <p className="text-[11px] opacity-90">{verificationResult.message}</p>
             </div>
@@ -219,7 +219,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ auditLogs, onClearLo
                   const severity = l.severity || 'INFO';
                   const actionStr = l.action || l.reason || 'System Action';
                   const detailsStr = l.details || (l.flightNumber ? `Flight ${l.flightNumber} -> ${l.newAssignment}` : 'System operation executed');
-                  const sealDisplay = l.immutableSeal || `ZA-SEC-${l.id.slice(-6).toUpperCase()}`;
+                  const sealDisplay = l.immutableSeal || 'no seal';
 
                   return (
                     <tr key={l.id} className="hover:bg-slate-50/80 transition-colors">

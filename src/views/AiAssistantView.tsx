@@ -403,7 +403,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-rose-500/20 text-rose-300 rounded-full text-xs font-semibold border border-rose-500/30 font-mono">
               <Sparkles className="w-3.5 h-3.5" />
-              GEMINI AI INTELLIGENT ASSISTANT
+              AI ASSISTANT · MICROSOFT 365 COPILOT
             </div>
             <h2 className="text-lg font-bold">Zambia Airways AI Schedule Analytics</h2>
           </div>

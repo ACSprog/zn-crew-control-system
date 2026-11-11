@@ -7,6 +7,7 @@ import {
   SystemUser,
   RosterAcknowledgment,
 } from '../types';
+import { currentPeriod, periodLabel, todayISO } from '../utils/dates';
 import {
   calculateReportingTime,
   calculateDutyEndTime,
@@ -66,16 +67,20 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
   currentUser,
   onRefreshData,
 }) => {
-  // Find matched crew member if user is a pilot/cabin crew, otherwise default to first captain
-  const matchedCrew = crew.find(
-    (c) => c.staffNumber === currentUser.staffNumber || c.name.includes(currentUser.name.split(' ')[0])
-  );
+  // Link the signed-in user to their crew record by email (preferred) or exact
+  // staff number. Never by name: matching on first name could show another
+  // person's roster. Crew logins only ever see their own record.
+  const isCrewLogin = currentUser.role === 'FLIGHT_CREW' || currentUser.role === 'PILOT_CABIN';
+  const myEmail = (currentUser.email || '').trim().toLowerCase();
+  const matchedCrew =
+    crew.find((c) => myEmail && (c.email || '').trim().toLowerCase() === myEmail) ||
+    crew.find((c) => !!currentUser.staffNumber && c.staffNumber === currentUser.staffNumber);
 
   const [selectedCrewId, setSelectedCrewId] = useState<string>(
-    matchedCrew?.id || (crew.length > 0 ? crew[0].id : '')
+    matchedCrew?.id || (!isCrewLogin && crew.length > 0 ? crew[0].id : '')
   );
 
-  const [selectedMonth, setSelectedMonth] = useState<string>('2026-08');
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentPeriod());
   const [selectedDutyForModal, setSelectedDutyForModal] = useState<{
     flight?: Flight;
     asg?: Assignment;
@@ -100,7 +105,9 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
     return () => unsub();
   }, []);
 
-  const selectedCrew = crew.find((c) => c.id === selectedCrewId) || crew[0];
+  const selectedCrew = isCrewLogin
+    ? matchedCrew
+    : crew.find((c) => c.id === selectedCrewId) || crew[0];
 
   // Filter assignments for selected crew member
   const crewAssignments = selectedCrew
@@ -157,6 +164,23 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
       });
     }
   }, [crew, flights, assignments, leaveRecords, selectedMonth, crewAssignments.length]);
+
+  if (!selectedCrew && isCrewLogin) {
+    return (
+      <div className="p-12 text-center bg-white rounded-2xl border border-slate-200 shadow-sm max-w-xl mx-auto my-12 space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto">
+          <Plane className="w-7 h-7" />
+        </div>
+        <div className="space-y-1.5">
+          <h3 className="text-base font-black text-slate-900 font-mono">Your login isn&apos;t linked to a crew record</h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Ask Crew Control to set the email on your crew record to <strong>{currentUser.email || 'your sign-in email'}</strong>
+            {currentUser.staffNumber ? <> or check that your staff number <strong>{currentUser.staffNumber}</strong> matches</> : null}.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!selectedCrew) {
     return (
@@ -227,7 +251,7 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
   };
 
   // Find next upcoming duty
-  const nowStr = '2026-08-10'; // System current date baseline
+  const nowStr = todayISO();
   const upcomingDuties = assignedFlights.filter((item) => item.flight.date >= nowStr);
   const nextDuty = upcomingDuties.length > 0 ? upcomingDuties[0] : null;
 
@@ -254,11 +278,12 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
     return { captain, fo, cabin };
   };
 
-  // Build Month Calendar Grid for August 2026
-  const daysInMonth = 31;
+  // Build Month Calendar Grid for the selected roster period
+  const [calYear, calMonth] = selectedMonth.split('-').map(Number);
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
   const calendarDays = Array.from({ length: daysInMonth }, (_, i) => {
     const dayNum = i + 1;
-    const dateStr = `2026-08-${String(dayNum).padStart(2, '0')}`;
+    const dateStr = `${selectedMonth}-${String(dayNum).padStart(2, '0')}`;
     const dayFlights = assignedFlights.filter((item) => item.flight.date === dateStr);
     const dayLeave = crewLeaves.find((l) => dateStr >= l.startDate && dateStr <= l.endDate);
 
@@ -373,7 +398,7 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono">
-                Official Roster Period: August 2026 (Rev 1)
+                Official Roster Period: {periodLabel(selectedMonth)}
               </span>
               {userAck ? (
                 <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full text-[10px] font-bold font-mono">
@@ -726,8 +751,39 @@ export const PersonalCrewPortalView: React.FC<PersonalCrewPortalViewProps> = ({
           <div className="flex items-center gap-3">
             <h2 className="text-base sm:text-lg font-black text-slate-900 font-mono flex items-center gap-2">
               <Calendar className="w-5 h-5 text-[#F37C1C]" />
-              Personal Roster: August 2026
+              Personal Roster: {periodLabel(selectedMonth)}
             </h2>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const [y, m] = selectedMonth.split('-').map(Number);
+                  setSelectedMonth(currentPeriod(new Date(y, m - 2, 1)));
+                }}
+                className="px-2 py-1 text-xs font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
+                title="Previous month"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedMonth(currentPeriod())}
+                className="px-2 py-1 text-[10px] font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
+              >
+                This month
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const [y, m] = selectedMonth.split('-').map(Number);
+                  setSelectedMonth(currentPeriod(new Date(y, m, 1)));
+                }}
+                className="px-2 py-1 text-xs font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
+                title="Next month"
+              >
+                ›
+              </button>
+            </div>
             <span className="px-2.5 py-0.5 bg-slate-100 text-slate-700 rounded-full text-xs font-mono font-bold">
               {totalMonthlySectors} Sectors Assigned
             </span>

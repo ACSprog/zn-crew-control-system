@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { LeaveTrainingRecord, CrewMember, LeaveTrainingType } from '../types';
+import { addDaysISO, todayISO } from '../utils/dates';
 import {
   CalendarOff,
   Plus,
@@ -30,8 +31,8 @@ export const LeaveTrainingView: React.FC<LeaveTrainingViewProps> = ({
   const [formData, setFormData] = useState({
     crewId: crew[0]?.id || '',
     type: 'Annual Leave' as LeaveTrainingType,
-    startDate: '2026-08-15',
-    endDate: '2026-08-20',
+    startDate: todayISO(),
+    endDate: addDaysISO(5),
     description: '',
     approved: true,
   });

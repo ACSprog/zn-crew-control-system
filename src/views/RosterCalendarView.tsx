@@ -26,7 +26,7 @@ export const RosterCalendarView: React.FC<RosterCalendarViewProps> = ({
   onUpdateAssignment,
 }) => {
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'day'>('month');
-  const [currentDate, setCurrentDate] = useState(new Date('2026-08-10'));
+  const [currentDate, setCurrentDate] = useState(new Date());
   const [aircraftFilter, setAircraftFilter] = useState<AircraftType | 'ALL'>('ALL');
   const [selectedFlight, setSelectedFlight] = useState<Flight | null>(null);
 
@@ -133,7 +133,7 @@ export const RosterCalendarView: React.FC<RosterCalendarViewProps> = ({
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setCurrentDate(new Date('2026-08-10'))}
+              onClick={() => setCurrentDate(new Date())}
               className="px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-white rounded-lg transition-colors"
             >
               Today

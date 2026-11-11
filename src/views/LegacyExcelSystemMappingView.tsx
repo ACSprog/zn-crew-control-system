@@ -9,6 +9,8 @@ import {
   AircraftFleet,
   AircraftType,
 } from '../types';
+import { computePilotRecency, isPilot, RECENCY_REQUIRED_LANDINGS, RECENCY_WINDOW_DAYS } from '../utils/recency';
+import { documentStatus, scanRosterLegalityConflicts } from '../utils/legalityEngine';
 import {
   FileCode2,
   Upload,
@@ -358,6 +360,11 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
         const crewStaff = row['Crew Staff Number'] || row['staffNumber'];
         const typeRaw = row['Exclusion Type'] || row['type'] || 'Annual Leave';
         if (!crewStaff) return;
+        // Never invent leave dates: rows without both dates are skipped.
+        if (!row['Start Date'] || !row['End Date']) {
+          addLog(`SKIPPED leave row ${idx + 1} for ${crewStaff}: missing Start Date or End Date.`);
+          return;
+        }
 
         const targetCrew = crew.find((c) => c.staffNumber === crewStaff || c.id === crewStaff);
 
@@ -366,8 +373,8 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
           crewId: targetCrew?.id || crewStaff,
           crewName: targetCrew?.name,
           type: typeRaw.includes('Sick') ? 'Sick' : typeRaw.includes('Training') ? 'Training' : 'Annual Leave',
-          startDate: row['Start Date'] || '2026-08-20',
-          endDate: row['End Date'] || '2026-08-25',
+          startDate: row['Start Date'],
+          endDate: row['End Date'],
           description: row['Reason / Remarks'] || row['description'] || 'Imported exclusion',
           approved: true,
         };
@@ -519,30 +526,83 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
   const handleRunMacro = (macroId: string) => {
     setRunningMacroId(macroId);
 
+    // These macros now evaluate the live data. They used to print fixed
+    // "all compliant" messages without checking anything.
     if (macroId === 'macro-1') {
       addLog('EXEC: Running CalculateRecency() macro...');
       setTimeout(() => {
-        addLog(`SCANNED: ${crew.length} active pilots evaluated.`);
-        addLog('RECENCY STATUS: All Q400 & B737 captains meet 3 takeoff/landing currency window.');
+        const pilots = crew.filter(isPilot);
+        const results = pilots.map((p) => ({ p, r: computePilotRecency(p, flights, assignments) }));
+        const notCurrent = results.filter((x) => !x.r.isCurrent);
+        const lapsingSoon = results.filter((x) => x.r.isCurrent && x.r.daysRemaining <= 14);
+        addLog(`SCANNED: ${pilots.length} pilots against ${RECENCY_REQUIRED_LANDINGS} landings in ${RECENCY_WINDOW_DAYS} days.`);
+        if (pilots.length === 0) {
+          addLog('RESULT: No pilots in the crew database.');
+        } else if (notCurrent.length === 0 && lapsingSoon.length === 0) {
+          addLog(`RESULT: All ${pilots.length} pilots are current.`);
+        } else {
+          notCurrent.forEach(({ p, r }) =>
+            addLog(`NOT CURRENT: ${p.name} (${p.staffNumber}) — ${r.landings90} landing(s) in last ${RECENCY_WINDOW_DAYS} days.`)
+          );
+          lapsingSoon.forEach(({ p, r }) =>
+            addLog(`LAPSING: ${p.name} (${p.staffNumber}) — recency lapses on ${r.lapsesOn} (${r.daysRemaining} days).`)
+          );
+          addLog(`RESULT: ${notCurrent.length} not current, ${lapsingSoon.length} lapsing within 14 days.`);
+        }
         setRunningMacroId(null);
-      }, 600);
+      }, 300);
     } else if (macroId === 'macro-2') {
       addLog('EXEC: Running CheckExpiryStatus() macro...');
       setTimeout(() => {
-        let warningCount = 0;
+        const now = new Date();
+        const soon = new Date(now.getTime() + 60 * 24 * 3600 * 1000);
+        let missing = 0;
+        let expired = 0;
+        let dueSoon = 0;
         crew.forEach((c) => {
-          if (c.passportStatus !== 'VALID' || c.medicalStatus !== 'VALID') warningCount++;
+          const docs: Array<[string, string | undefined, boolean]> = [
+            ['Licence', c.licenseExpiry, true],
+            ['Medical', c.medicalExpiry, true],
+            ['Passport', c.passportExpiry, true],
+            ['Airport pass', c.airportPassExpiry, true],
+            ['SIM/IR', c.simExpiry, isPilot(c)],
+            ['SEPT', c.septExpiry, true],
+            ['CRM', c.crmExpiry, true],
+            ['DGR', c.dgrExpiry, true],
+          ];
+          docs.forEach(([label, value, required]) => {
+            if (!required) return;
+            const st = documentStatus(value, now);
+            if (st === 'MISSING' || st === 'INVALID_DATE') {
+              missing++;
+              addLog(`MISSING: ${c.name} (${c.staffNumber}) — ${label} date ${st === 'MISSING' ? 'not on file' : `unreadable ("${value}")`}.`);
+            } else if (st === 'EXPIRED') {
+              expired++;
+              addLog(`EXPIRED: ${c.name} (${c.staffNumber}) — ${label} expired ${value}.`);
+            } else if (documentStatus(value, soon) === 'EXPIRED') {
+              dueSoon++;
+            }
+          });
         });
-        addLog(`EXPIRY CHECK COMPLETE: Identified ${warningCount} documents requiring CAA renewal alert.`);
+        addLog(`EXPIRY CHECK COMPLETE: ${expired} expired, ${missing} missing/unreadable, ${dueSoon} expiring within 60 days.`);
         setRunningMacroId(null);
-      }, 600);
+      }, 300);
     } else if (macroId === 'macro-3') {
       addLog('EXEC: Running ValidateAssignment() FTL Legality Macro...');
       setTimeout(() => {
-        addLog(`AUDIT COMPLETE: Checked ${assignments.length} published flight duties against 12h rest rules.`);
-        addLog('RESULT: 100% compliance with Zambia CAA Flight Time Limitations (FTL).');
+        const scan = scanRosterLegalityConflicts(flights, crew, assignments, leaveRecords, rules);
+        addLog(`AUDIT COMPLETE: Checked ${scan.totalChecked} crew duties across ${scan.totalAssignments} assignments.`);
+        if (scan.conflicts.length === 0) {
+          addLog('RESULT: No legality conflicts found.');
+        } else {
+          scan.conflicts.slice(0, 50).forEach((c) =>
+            addLog(`${c.severity}: ${c.flightNumber} ${c.flightDate} — ${c.crewName} (${c.role}): ${c.failReasons.join('; ') || c.description}`)
+          );
+          if (scan.conflicts.length > 50) addLog(`… and ${scan.conflicts.length - 50} more.`);
+          addLog(`RESULT: ${scan.criticalConflictCount} critical conflict(s), ${scan.warningCount} warning(s). ${scan.summaryText}`);
+        }
         setRunningMacroId(null);
-      }, 700);
+      }, 300);
     } else if (macroId === 'macro-4') {
       addLog('EXEC: Running GenerateMonthlyRoster() Auto Scheduler Macro...');
       if (onRunAutoScheduler) onRunAutoScheduler();

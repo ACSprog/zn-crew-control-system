@@ -339,11 +339,11 @@ const SYSTEM_MODULES: ModuleInfo[] = [
   },
   {
     id: 'assistant',
-    name: 'Gemini AI OCC Flight Assistant',
+    name: 'AI OCC Assistant (Microsoft 365 Copilot)',
     icon: Sparkles,
     badge: 'Intelligent AI',
     category: 'Operations',
-    summary: 'Context-aware AI conversational assistant powered by Google Gemini, capable of answering FTL rules, querying available crew, and resolving dispatch questions.',
+    summary: 'Prepares a snapshot of current crew, flight, roster and FTL data and hands your question to Microsoft 365 Copilot Chat (work account, enterprise data protection) for decision support.',
     keyFeatures: [
       'Natural language queries (e.g., "Which Captains are rested for flight ZN101?")',
       'Instant FTL regulation explanation and rest calculation breakdown',
@@ -789,10 +789,10 @@ export const StaffTrainingGuideView: React.FC = () => {
                   <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
                     <h4 className="text-xs font-bold text-slate-800 flex items-center gap-2">
                       <Sparkles className="w-4 h-4 text-blue-600" />
-                      4. Utilizing the Gemini AI OCC Assistant
+                      4. Utilizing the AI OCC Assistant (Copilot)
                     </h4>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Use the <strong>AI Assistant</strong> view to ask questions like <em>"Which Captain is cleared for Q400 flight ZN101?"</em> or <em>"Explain flight crew rest calculations."</em>
+                      Use the <strong>AI Assistant</strong> view to ask questions like <em>"Which Captain is cleared for Q400 flight ZN101?"</em>. The app downloads a data snapshot and copies your question; attach the snapshot in Microsoft 365 Copilot Chat (signed in with your work account) and paste the question.
                     </p>
                   </div>
                 </div>
@@ -1308,7 +1308,7 @@ export const StaffTrainingGuideView: React.FC = () => {
                       SOP 108
                     </span>
                     <h3 className="text-sm font-bold text-slate-900">
-                      Gemini AI OCC Flight Assistant Usage & Operational Inquiry Protocols
+                      AI OCC Assistant (Copilot) Usage & Operational Inquiry Protocols
                     </h3>
                   </div>
                   <span className="text-[10px] bg-indigo-100 text-indigo-800 font-bold px-2 py-0.5 rounded font-mono">
@@ -1316,10 +1316,11 @@ export const StaffTrainingGuideView: React.FC = () => {
                   </span>
                 </div>
                 <div className="text-xs text-slate-600 space-y-2 leading-relaxed">
-                  <p><strong>Purpose:</strong> Safe and effective utilization of the Gemini-powered OCC Assistant for fast decision support during flight dispatch and irregular operations.</p>
+                  <p><strong>Purpose:</strong> Safe and effective use of the Copilot-based OCC Assistant for fast decision support during flight dispatch and irregular operations.</p>
                   <ol className="list-decimal list-inside space-y-1 font-sans pl-2 text-slate-700">
                     <li>Open <strong>AI Assistant</strong> from the left sidebar navigation.</li>
-                    <li>Ask natural language operational questions (e.g. <em>"Explain the 90-day recency rule for Dash 8 Captains"</em> or <em>"Suggest rested First Officers for flight ZN303"</em>).</li>
+                    <li>Ask natural language operational questions (e.g. <em>"Suggest rested First Officers for flight ZN303"</em>). The app downloads a data snapshot and copies your question.</li>
+                    <li>Open <strong>Microsoft 365 Copilot Chat</strong> with your <strong>work</strong> account (green shield), attach the snapshot and paste the question. Never use a personal/consumer AI account with crew data.</li>
                     <li>Review AI responses and cross-reference with the active <strong>Legality Rule Engine</strong>.</li>
                     <li>Do not input sensitive passenger personal identifying data into free-text prompts.</li>
                   </ol>

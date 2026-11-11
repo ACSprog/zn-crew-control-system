@@ -13,6 +13,7 @@ import {
   recordCrewAcknowledgment,
 } from './storage';
 import { syncAcknowledgmentsToFirebase } from './firebaseSync';
+import { currentPeriod } from './dates';
 
 export interface CriticalRosterSnapshot {
   id: string;
@@ -148,7 +149,7 @@ export async function queueOfflineAcknowledgment(
   crewId: string,
   staffNumber: string,
   crewName: string,
-  rosterPeriod: string = '2026-08'
+  rosterPeriod: string = currentPeriod()
 ): Promise<RosterAcknowledgment> {
   // First, record locally in application storage
   const ack = recordCrewAcknowledgment(crewId, staffNumber, crewName, rosterPeriod);

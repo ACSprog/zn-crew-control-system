@@ -1,3 +1,4 @@
+import { computePilotRecency } from './recency';
 import {
   CrewMember,
   Flight,
@@ -10,6 +11,28 @@ import {
   CriticalLegalityConflict,
   RosterLegalityScanResult,
 } from '../types';
+
+/** Airports inside Zambia. A flight touching any other station is international. */
+export const ZAMBIA_DOMESTIC_AIRPORTS = new Set([
+  'LUN', 'NLA', 'LVI', 'MFU', 'KAA', 'SLI', 'CIP', 'MNS', 'KIW', 'ZKP', 'MMQ', 'KMZ', 'ZGM', 'MNR', 'KLB', 'JEK',
+]);
+
+export function isInternationalFlight(flight: { departure?: string; arrival?: string }): boolean {
+  const dep = (flight.departure || '').trim().toUpperCase();
+  const arr = (flight.arrival || '').trim().toUpperCase();
+  if (!dep || !arr) return true; // unknown route: be conservative
+  return !ZAMBIA_DOMESTIC_AIRPORTS.has(dep) || !ZAMBIA_DOMESTIC_AIRPORTS.has(arr);
+}
+
+export type DocumentState = 'VALID' | 'EXPIRED' | 'MISSING' | 'INVALID_DATE';
+
+/** Classifies a document expiry date against a reference date. Blank = MISSING. */
+export function documentStatus(expiry: string | undefined | null, onDate: Date): DocumentState {
+  if (!expiry || !String(expiry).trim()) return 'MISSING';
+  const d = new Date(expiry);
+  if (isNaN(d.getTime())) return 'INVALID_DATE';
+  return d < onDate ? 'EXPIRED' : 'VALID';
+}
 
 export function formatHoursMinutes(hours: number): string {
   const h = Math.floor(hours);
@@ -57,68 +80,34 @@ export function validateCrewLegality(
   const flightDate = new Date(flight.date);
   let docValidityPass = true;
 
-  // CAA Flight Crew License / Attestation Expiry Check
-  if (crew.licenseExpiry && new Date(crew.licenseExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `License / Attestation expired on ${crew.licenseExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // Medical Certificate Expiry Check
-  if (crew.medicalExpiry && new Date(crew.medicalExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `Medical certificate expired on ${crew.medicalExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // Passport Expiry Check
-  if (crew.passportExpiry && new Date(crew.passportExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `Passport expired on ${crew.passportExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // Airport Security Pass Expiry Check
-  if (crew.airportPassExpiry && new Date(crew.airportPassExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `Airport Security Pass expired on ${crew.airportPassExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // Simulator / Instrument Rating Currency Check (Flight Deck Pilots Only)
-  if (!isCabinCrew && crew.simExpiry && new Date(crew.simExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `Pilot Simulator / IR Rating expired on ${crew.simExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // SEPT Validity Check (Safety & Emergency Procedures Training)
-  if (crew.septExpiry && new Date(crew.septExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `SEPT (Safety & Emergency Procedures) expired on ${crew.septExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // CRM Validity Check (Crew Resource Management)
-  if (crew.crmExpiry && new Date(crew.crmExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `CRM (Crew Resource Management) expired on ${crew.crmExpiry} (Flight date: ${flight.date}).`
-    );
-  }
-
-  // DGR Validity Check (Dangerous Goods Regulations)
-  if (crew.dgrExpiry && new Date(crew.dgrExpiry) < flightDate) {
-    docValidityPass = false;
-    failReasons.push(
-      `DGR (Dangerous Goods) validity expired on ${crew.dgrExpiry} (Flight date: ${flight.date}).`
-    );
+  // SAFETY: a document with no date on file is treated as NOT valid. The
+  // system must never assume a crew member is current because a field is
+  // blank (previously missing dates silently passed this check).
+  const international = isInternationalFlight(flight);
+  const docChecks: Array<{ label: string; value?: string; required: boolean }> = [
+    { label: 'License / Attestation', value: crew.licenseExpiry, required: true },
+    { label: 'Medical certificate', value: crew.medicalExpiry, required: true },
+    { label: 'Passport', value: crew.passportExpiry, required: international },
+    { label: 'Airport Security Pass', value: crew.airportPassExpiry, required: true },
+    { label: 'Pilot Simulator / IR Rating', value: crew.simExpiry, required: !isCabinCrew },
+    { label: 'SEPT (Safety & Emergency Procedures)', value: crew.septExpiry, required: true },
+    { label: 'CRM (Crew Resource Management)', value: crew.crmExpiry, required: true },
+    { label: 'DGR (Dangerous Goods)', value: crew.dgrExpiry, required: true },
+  ];
+  for (const doc of docChecks) {
+    const status = documentStatus(doc.value, flightDate);
+    if (status === 'MISSING') {
+      if (doc.required) {
+        docValidityPass = false;
+        failReasons.push(`${doc.label}: no expiry date on file — cannot be confirmed valid.`);
+      }
+    } else if (status === 'INVALID_DATE') {
+      docValidityPass = false;
+      failReasons.push(`${doc.label}: unreadable expiry date "${doc.value}" — correct it in the Crew Database.`);
+    } else if (status === 'EXPIRED') {
+      docValidityPass = false;
+      failReasons.push(`${doc.label} expired on ${doc.value} (Flight date: ${flight.date}).`);
+    }
   }
 
   // 3. Leave & Training Exclusion
@@ -310,9 +299,7 @@ export function validateCrewLegality(
       : 'FAIL';
 
   const recencyPass =
-    (crew.flightsCount || 0) >= 3 ||
-    crew.role === 'Cabin Crew' ||
-    crew.role === 'Senior Cabin Crew';
+    isCabinCrew || computePilotRecency(crew, allFlights, allAssignments, flightDate).isCurrent;
   const lineCheckPass = crew.lineCheck
     ? new Date(crew.lineCheck).getTime() > Date.now()
     : true;
@@ -369,7 +356,8 @@ export function runPreGenerationComplianceCheck(
   crewMembers: CrewMember[],
   flights: Flight[],
   leaveRecords: LeaveTrainingRecord[],
-  rules: LegalityRules
+  rules: LegalityRules,
+  assignments: Assignment[] = []
 ): PreGenerationValidationReport {
   const crewChecks: PreGenerationCrewCheck[] = [];
   const hardViolations: string[] = [];
@@ -399,27 +387,28 @@ export function runPreGenerationComplianceCheck(
     }
 
     // 4 Currencies Check (SIM, SEPT, CRM, DGR)
-    const simValid = !crew.simExpiry || new Date(crew.simExpiry) > now;
+    const isFlightDeck = crew.role === 'Captain' || crew.role === 'First Officer';
+    const simValid = !isFlightDeck || documentStatus(crew.simExpiry, now) === 'VALID';
     if (!simValid) {
-      issues.push(`SIM / Instrument Rating Expired (${crew.simExpiry})`);
+      issues.push(`SIM / Instrument Rating Expired or Missing (${crew.simExpiry || 'not on file'})`);
       warnings.push(`Crew ${crew.name} (${crew.staffNumber}): SIM check overdue`);
     }
 
-    const septValid = !crew.septExpiry || new Date(crew.septExpiry) > now;
+    const septValid = documentStatus(crew.septExpiry, now) === 'VALID';
     if (!septValid) {
-      issues.push(`SEPT (Safety Procedures) Expired (${crew.septExpiry})`);
+      issues.push(`SEPT (Safety Procedures) Expired or Missing (${crew.septExpiry || 'not on file'})`);
       warnings.push(`Crew ${crew.name} (${crew.staffNumber}): SEPT training overdue`);
     }
 
-    const crmValid = !crew.crmExpiry || new Date(crew.crmExpiry) > now;
+    const crmValid = documentStatus(crew.crmExpiry, now) === 'VALID';
     if (!crmValid) {
-      issues.push(`CRM Currency Expired (${crew.crmExpiry})`);
+      issues.push(`CRM Currency Expired or Missing (${crew.crmExpiry || 'not on file'})`);
       warnings.push(`Crew ${crew.name} (${crew.staffNumber}): CRM training overdue`);
     }
 
-    const dgrValid = !crew.dgrExpiry || new Date(crew.dgrExpiry) > now;
+    const dgrValid = documentStatus(crew.dgrExpiry, now) === 'VALID';
     if (!dgrValid) {
-      issues.push(`DGR (Dangerous Goods) Expired (${crew.dgrExpiry})`);
+      issues.push(`DGR (Dangerous Goods) Expired or Missing (${crew.dgrExpiry || 'not on file'})`);
       warnings.push(`Crew ${crew.name} (${crew.staffNumber}): DGR certification overdue`);
     }
 
@@ -432,7 +421,7 @@ export function runPreGenerationComplianceCheck(
 
     // Recency Check (For pilots: min 3 landings in 90 days)
     const isPilot = crew.role === 'Captain' || crew.role === 'First Officer';
-    const recencyValid = !isPilot || (crew.flightsCount !== undefined ? crew.flightsCount >= 3 : true);
+    const recencyValid = !isPilot || computePilotRecency(crew, flights, assignments, now).isCurrent;
     if (!recencyValid) {
       issues.push(`Recency Non-Compliant (<3 Landings in 90 Days)`);
       warnings.push(`Crew ${crew.name} (${crew.staffNumber}): Recency non-compliant`);

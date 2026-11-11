@@ -65,8 +65,14 @@ service cloud.firestore {
       allow write: if canManageRoster();
     }
 
+    // Crew may read only records stamped with their own sign-in email.
+    // (Field check, not a get(): list queries can't be authorised per-doc.)
+    function isOwnStamped(data) {
+      return isCrewSelf() && data.crewEmail == request.auth.token.email;
+    }
+
     match /leave/{id} {
-      allow read: if canReadAllOperationalData() || isCrewSelf();
+      allow read: if canReadAllOperationalData() || isOwnStamped(resource.data);
       allow write: if canManageRoster();
     }
 
@@ -77,7 +83,12 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read: if signedIn();
-      allow write: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      // Users may update their own profile, but never their role, permissions
+      // or email (the UI shows menus based on these fields).
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (signedIn() && request.auth.uid == uid &&
+         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'permissions', 'email', 'staffNumber']));
     }
 
     match /auditLogs/{id} {
@@ -87,13 +98,39 @@ service cloud.firestore {
     }
 
     match /acknowledgments/{id} {
-      allow read: if canReadAllOperationalData() || isCrewSelf();
-      allow write: if signedIn();
+      allow read: if canReadAllOperationalData() || isOwnStamped(resource.data);
+      // Crew acknowledge only their own roster (crewId must be their own crew
+      // record); OCC may record on their behalf.
+      allow create, update: if canManageRoster() ||
+        (isOwnStamped(request.resource.data) &&
+         get(/databases/$(database)/documents/crew/$(request.resource.data.crewId)).data.email == request.auth.token.email);
+      allow delete: if canManageRoster();
     }
 
     match /config/{id} {
       allow read: if signedIn();
       allow write: if isAdmin();
+    }
+
+    // In-app notifications. targetEmail == null is a broadcast to everyone.
+    // Users read only broadcasts and their own; they may only add their own
+    // uid to readBy. Only OCC staff create them.
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    match /inAppNotifications/{id} {
+      allow read: if signedIn() &&
+        (resource.data.targetEmail == null || resource.data.targetEmail == myEmail());
+      allow create: if isScheduler() &&
+        request.resource.data.readBy == [] &&
+        (request.resource.data.targetEmail == null || request.resource.data.targetEmail is string);
+      allow update: if signedIn() &&
+        (resource.data.targetEmail == null || resource.data.targetEmail == myEmail()) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']) &&
+        request.resource.data.readBy.hasAll(resource.data.readBy) &&
+        request.resource.data.readBy.removeAll(resource.data.readBy).hasOnly([request.auth.uid]);
+      allow delete: if isAdmin();
     }
 
     // FREE-TIER: Power Automate gateway settings (flow URL + shared secret).

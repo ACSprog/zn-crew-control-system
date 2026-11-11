@@ -1,4 +1,5 @@
 import { CrewMember, CrewRole, AircraftType, CrewStatus } from '../types';
+import { documentStatus } from './legalityEngine';
 
 /**
  * Intelligent Crew Role Normalizer
@@ -338,31 +339,47 @@ export function parseCrewData(
       status: (getVal(['Status', 'Duty Status']) as CrewStatus) || 'ACTIVE',
       seniority: existingCrew.length + importedCount + 1,
       companyEmail: compEmail || `${name.toLowerCase().replace(/[^a-z0-9]/g, '.')}@zambiaairways.co.zm`,
-      email: compEmail || persEmail || `${name.toLowerCase().replace(/[^a-z0-9]/g, '.')}@zambiaairways.co.zm`,
+      // Never invent an address: a guessed email could belong to someone else.
+      email: (compEmail || persEmail || '').trim().toLowerCase(),
       personalEmail: persEmail,
       mobileNumber: mobileNum || '+260 97 100000',
       phone: mobileNum || '+260 97 100000',
       whatsAppNumber: waNum || '+260 97 100000',
       preferredChannel,
       whatsAppOptIn,
-      simExpiry: getVal(['Simulator IR Expiry', 'Simulator IR Validity', 'Simulator', 'Sim Expiry', 'simExpiry']) || '2027-08-31',
-      septExpiry: getVal(['SEPT Expiry', 'SEPT Validity', 'SEPT', 'septExpiry']) || '2027-09-15',
-      crmExpiry: getVal(['CRM Expiry', 'CRM Validity', 'CRM', 'crmExpiry']) || '2027-10-30',
-      dgrExpiry: getVal(['DGR Expiry', 'DGR Validity', 'DGR', 'dgrExpiry']) || '2027-11-20',
-      medicalExpiry: getVal(['Medical Expiry', 'Medical', 'medicalExpiry']) || '2027-06-30',
-      licenseExpiry: getVal(['License Expiry', 'License', 'licenseExpiry']) || '2027-12-31',
-      passportExpiry: getVal(['Passport Expiry', 'passportExpiry']) || '2028-12-31',
-      airportPassExpiry: getVal(['Airport Pass Expiry', 'airportPassExpiry']) || '2027-12-31',
+      simExpiry: getVal(['Simulator IR Expiry', 'Simulator IR Validity', 'Simulator', 'Sim Expiry', 'simExpiry']) || '',
+      septExpiry: getVal(['SEPT Expiry', 'SEPT Validity', 'SEPT', 'septExpiry']) || '',
+      crmExpiry: getVal(['CRM Expiry', 'CRM Validity', 'CRM', 'crmExpiry']) || '',
+      dgrExpiry: getVal(['DGR Expiry', 'DGR Validity', 'DGR', 'dgrExpiry']) || '',
+      medicalExpiry: getVal(['Medical Expiry', 'Medical', 'medicalExpiry']) || '',
+      licenseExpiry: getVal(['License Expiry', 'License', 'licenseExpiry']) || '',
+      passportExpiry: getVal(['Passport Expiry', 'passportExpiry']) || '',
+      airportPassExpiry: getVal(['Airport Pass Expiry', 'airportPassExpiry']) || '',
       typeRating: qualifications.join(', ') || (role.includes('Cabin') ? 'Cabin Crew Certified' : 'Type Rated'),
-      trainingStatus: 'VALID',
-      lineCheck: getVal(['Line Check Schedule', 'Line Check', 'lineCheck']) || '2026-12-19',
+      trainingStatus: 'VALID', // recalculated below from the actual dates
+      lineCheck: getVal(['Line Check Schedule', 'Line Check', 'lineCheck']) || '',
       weeklyBlockHours: parseFloat(getVal(['Weekly Block Hours', 'weeklyBlockHours'])) || 0,
       monthlyBlockHours: parseFloat(getVal(['Monthly Block Hours', 'monthlyBlockHours'])) || 0,
       annualBlockHours: parseFloat(getVal(['Annual Block Hours', 'annualBlockHours'])) || 0,
       monthlyDutyHours: parseFloat(getVal(['Monthly Duty Hours', 'monthlyDutyHours'])) || 0,
       daysOff: 10,
-      notes: 'Imported into Zambia Airways Crew Database with verified rank and certifications',
+      notes: 'Imported into Zambia Airways Crew Database',
     };
+
+    // Training status from the real dates: anything missing/expired = EXPIRED,
+    // anything expiring within 60 days = DUE_SOON.
+    {
+      const isPilot = newMember.role === 'Captain' || newMember.role === 'First Officer';
+      const required = [
+        newMember.licenseExpiry, newMember.medicalExpiry, newMember.septExpiry,
+        newMember.crmExpiry, newMember.dgrExpiry, ...(isPilot ? [newMember.simExpiry] : []),
+      ];
+      const now = new Date();
+      const soon = new Date(now.getTime() + 60 * 24 * 3600 * 1000);
+      const states = required.map((d) => documentStatus(d, now));
+      if (states.some((st) => st !== 'VALID')) newMember.trainingStatus = 'EXPIRED';
+      else if (required.some((d) => documentStatus(d, soon) === 'EXPIRED')) newMember.trainingStatus = 'DUE_SOON';
+    }
 
     newCrewList.push(newMember);
     importedCount++;

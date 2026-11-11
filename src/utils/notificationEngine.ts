@@ -1,4 +1,5 @@
 import { sendViaPowerAutomate } from './powerAutomateGateway';
+import { sendInAppNotification } from './inAppNotifications';
 import {
   NotificationItem,
   NotificationChannel,
@@ -616,16 +617,43 @@ export async function dispatchNotificationToProvider(
     };
   }
 
-  // 3. In-App Provider Dispatch (Always succeeds instantaneously)
-  return {
-    success: true,
-    channel: 'IN_APP',
-    provider: 'IN_APP_DISPATCH',
-    providerMessageId: `inapp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    status: 'DELIVERED',
-    sentAt: now,
-    deliveredAt: now,
-  };
+  // 3. In-App: stored in Firestore so it appears on the crew member's own
+  // device (bell icon). "SENT" = stored; the recipient's read status is
+  // tracked on the notification itself.
+  if (!item.recipientEmail) {
+    return {
+      success: false,
+      channel: 'IN_APP',
+      provider: 'IN_APP_DISPATCH',
+      status: 'FAILED',
+      errorMessage: 'Crew member has no email address on file, so they cannot sign in to see in-app messages.',
+    };
+  }
+  try {
+    const id = await sendInAppNotification({
+      targetEmail: item.recipientEmail,
+      targetCrewId: item.recipientId,
+      type: 'ROSTER_AMENDED',
+      title: item.subject || 'Crew Control notification',
+      message: item.message,
+    });
+    return {
+      success: true,
+      channel: 'IN_APP',
+      provider: 'IN_APP_DISPATCH',
+      providerMessageId: id,
+      status: 'SENT',
+      sentAt: now,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      channel: 'IN_APP',
+      provider: 'IN_APP_DISPATCH',
+      status: 'FAILED',
+      errorMessage: `Could not store in-app notification: ${(err as Error)?.message || 'unknown error'}`,
+    };
+  }
 }
 
 // ==========================================
@@ -724,12 +752,17 @@ export async function processNotificationWithRetryAndFallback(
         return updatedItem;
       }
     } else if (updatedItem.channel === 'EMAIL') {
-      // Fallback: Email -> In-App
+      // Fallback: Email -> In-App (actually sent now, not just labelled)
       updatedItem.fallbackAttempted = true;
       updatedItem.fallbackChannel = 'IN_APP';
-      updatedItem.status = 'DELIVERED';
-      updatedItem.errorMessage = `Delivered via In-App Alert. Primary Email delivery failed: ${lastError}`;
-      return updatedItem;
+      const inApp = await dispatchNotificationToProvider({ ...updatedItem, channel: 'IN_APP' });
+      if (inApp.success) {
+        updatedItem.status = 'SENT';
+        updatedItem.providerMessageId = inApp.providerMessageId;
+        updatedItem.errorMessage = `Sent as an in-app alert instead. Email failed: ${lastError}`;
+        return updatedItem;
+      }
+      lastError = `${lastError}; in-app fallback also failed: ${inApp.errorMessage}`;
     }
   }
 
@@ -783,15 +816,15 @@ export function buildNotificationItemsForRosterPublish(
     const variables: Record<string, string | number> = {
       crew_name: member.name,
       employee_id: member.staffNumber,
-      flight_number: flight?.flightNumber || 'ZN504',
-      flight_date: flight?.date || '2026-08-17',
-      origin: flight?.departure || 'LUN',
-      destination: flight?.arrival || 'NLA',
-      report_time: crewAssignment?.reportTime || '06:00',
-      departure_time: flight?.std || '07:00',
-      arrival_time: flight?.sta || '07:45',
-      aircraft_type: flight?.aircraft || member.aircraft || 'Q400',
-      aircraft_registration: flight?.registration || '9J-ZAW',
+      flight_number: flight?.flightNumber || 'TBC',
+      flight_date: flight?.date || 'TBC',
+      origin: flight?.departure || 'TBC',
+      destination: flight?.arrival || 'TBC',
+      report_time: crewAssignment?.reportTime || 'TBC',
+      departure_time: flight?.std || 'TBC',
+      arrival_time: flight?.sta || 'TBC',
+      aircraft_type: flight?.aircraft || member.aircraft || 'TBC',
+      aircraft_registration: flight?.registration || 'TBC',
       position: member.role,
       duty_code: crewAssignment?.dutyCode || 'FLT',
     };

@@ -9,11 +9,13 @@ import {
   RosterOptimizationResult,
   PreGenerationValidationReport,
 } from '../types';
+import { sendInAppNotification } from '../utils/inAppNotifications';
+import { autoNotifyRosterPublished } from '../modules/notifications/autoDispatch';
+import { currentPeriod, periodLabel } from '../utils/dates';
 import { runAutoScheduler, optimizeRoster } from '../utils/schedulerEngine';
 import { runPreGenerationComplianceCheck } from '../utils/legalityEngine';
 import {
   getOpenAssignmentsSummary,
-  addSystemNotification,
   saveAcknowledgments,
   loadAcknowledgments,
 } from '../utils/storage';
@@ -79,7 +81,7 @@ export const AutoSchedulerView: React.FC<AutoSchedulerViewProps> = ({
 
   // Publish Modal State
   const [showPublishModal, setShowPublishModal] = useState<boolean>(false);
-  const [publishPeriod, setPublishPeriod] = useState<string>('August 2026');
+  const [publishPeriod, setPublishPeriod] = useState<string>(periodLabel(currentPeriod()));
   const [publishNotes, setPublishNotes] = useState<string>('Official Monthly Flight Operations Roster');
 
   // Optimizer State & Options
@@ -99,7 +101,7 @@ export const AutoSchedulerView: React.FC<AutoSchedulerViewProps> = ({
 
   // Run Pre-Generation Compliance Check
   const handleOpenPreCheckModal = () => {
-    const report = runPreGenerationComplianceCheck(crew, flights, leaveRecords, rules);
+    const report = runPreGenerationComplianceCheck(crew, flights, leaveRecords, rules, assignments);
     setPreCheckReport(report);
     setShowPreCheckModal(true);
   };
@@ -133,13 +135,19 @@ export const AutoSchedulerView: React.FC<AutoSchedulerViewProps> = ({
       revision: 1,
     }));
 
-    // Dispatch broadcast notification to all crew members
-    addSystemNotification({
+    // Broadcast in-app notice to everyone (stored in Firestore, so it reaches
+    // every signed-in device), then personal email/in-app messages per crew
+    // member if the "Roster published" automated trigger is on.
+    sendInAppNotification({
+      targetEmail: null,
       type: 'ROSTER_PUBLISHED',
       title: `${publishPeriod} Flight Roster Published`,
       message: `The official roster for ${publishPeriod} has been published by OCC with ${generatorResult.assignedCount} fully assigned sectors. Please review and acknowledge your duties in the Crew Portal.`,
       revision: 1,
-    });
+    }).catch((err) => console.warn('Broadcast notification failed', err));
+    autoNotifyRosterPublished(publishedAssignments, crew, flights, 'OCC Roster Publication').catch((err) =>
+      console.warn('Roster publication notifications failed', err)
+    );
 
     onApplyAssignments(
       publishedAssignments,
