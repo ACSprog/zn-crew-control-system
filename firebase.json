@@ -48,5 +48,10 @@
       "port": 4001
     },
     "singleProject": true
+  },
+  "auth": {
+    "providers": {
+      "emailPassword": true
+    }
   }
 }
