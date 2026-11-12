@@ -30,7 +30,27 @@ import { runAutoScheduler, optimizeRoster } from './utils/schedulerEngine';
 import { subscribeToRealtimeSync, pushAllDataToFirebase, syncCrewToFirebase, syncFleetToFirebase, syncFlightsToFirebase, syncAssignmentsToFirebase, syncLeaveToFirebase, syncUsersToFirebase } from './utils/firebaseSync';
 import { canAccessView, normalizeRole } from './utils/securityEngine';
 import { initOfflineSyncService, cacheCriticalRoster } from './utils/offlineSync';
-import { onAuthChange, getUserRole, loadUserProfile, signOutUser, changeOwnPassword } from './utils/authService';
+import {
+  onAuthChange,
+  signOutUser,
+  changeOwnPassword,
+  verifyUserAccess,
+  subscribeMyUserRecord,
+  effectiveRequire2fa,
+  isEnrolledIn2fa,
+  sessionUsed2fa,
+  removeOwnAuthenticator,
+  recordMy2faInUse,
+  recordLastLogin,
+  setLoginNotice,
+  BLOCKED_MESSAGE,
+  type UserAccess,
+  type PendingAdminAction,
+} from './utils/authService';
+import { answerMyPendingAction, describePendingAction } from './utils/accounts';
+import { SessionGuard, clearActivity } from './components/SessionGuard';
+import { FirstLoginPasswordChange } from './components/FirstLoginPasswordChange';
+import { TwoFactorRequired, TwoFactorModal } from './components/TwoFactorSetup';
 import type { User as FirebaseUser } from 'firebase/auth';
 
 // Components & Views
@@ -105,28 +125,28 @@ function avatarInitialsFor(name: string): string {
 }
 
 /**
- * Combines a signed-in Firebase Auth user, their `role` custom claim, and
- * their Firestore `users/{uid}` profile document (display metadata only)
- * into the SystemUser shape the rest of the UI expects.
+ * Combines a signed-in Firebase Auth user with their Firestore `users/{uid}`
+ * profile (role, status, permissions — the source of truth that
+ * firestore.rules also check) into the SystemUser shape the UI expects.
  */
-async function buildCurrentUserFromAuth(fbUser: FirebaseUser): Promise<SystemUser> {
-  const role = (await getUserRole(fbUser)) || 'FLIGHT_CREW';
-  const profile = await loadUserProfile(fbUser);
-  const name = profile?.name || fbUser.displayName || fbUser.email || 'Unknown User';
+function buildCurrentUserFromAccess(fbUser: FirebaseUser, access: UserAccess): SystemUser {
+  const profile = access.profile || {};
+  const role = access.role || 'FLIGHT_CREW';
+  const name = profile.name || fbUser.displayName || fbUser.email || 'Unknown User';
   return {
     id: fbUser.uid,
-    staffNumber: profile?.staffNumber || '—',
+    staffNumber: profile.staffNumber || '—',
     name,
-    email: fbUser.email || profile?.email || '',
-    role: role as SystemUser['role'],
-    department: profile?.department || 'Unassigned',
-    base: profile?.base || 'LUN',
-    status: profile?.status || 'ACTIVE',
-    avatarInitials: profile?.avatarInitials || avatarInitialsFor(name),
+    email: fbUser.email || profile.email || '',
+    role,
+    department: profile.department || 'Unassigned',
+    base: profile.base || 'LUN',
+    status: profile.status || 'ACTIVE',
+    avatarInitials: profile.avatarInitials || avatarInitialsFor(name),
     lastLogin: new Date().toISOString(),
-    permissions: profile?.permissions || defaultPermissionsForRole(role),
-    mfaEnabled: profile?.mfaEnabled,
-    mfaMethod: profile?.mfaMethod,
+    permissions: profile.permissions || defaultPermissionsForRole(role),
+    mfaEnabled: access.twoFactorEnrolled,
+    mfaMethod: access.twoFactorEnrolled ? 'APP_AUTHENTICATOR' : undefined,
   };
 }
 
@@ -162,25 +182,94 @@ export function App() {
   const [isAuthResolving, setIsAuthResolving] = useState<boolean>(true);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
 
+  // Sign-in gate state (same steps as the QSA Reporting System):
+  // account allowed → temporary password changed → 2FA used if required.
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  // Role of the person actually signed in (currentUser can be a display-only "preview as")
+  const [signedInRole, setSignedInRole] = useState<SystemUser['role'] | null>(null);
+  const [loginNotice, setLoginNoticeState] = useState<string | null>(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [require2fa, setRequire2fa] = useState(false);
+  const [global2fa, setGlobal2fa] = useState(false);
+  const [session2fa, setSession2fa] = useState(false);
+  const [enrolled2fa, setEnrolled2fa] = useState(false);
+  const [myPendingAction, setMyPendingAction] = useState<PendingAdminAction | undefined>(undefined);
+  const [answeringPending, setAnsweringPending] = useState(false);
+  const [isTwoFactorOpen, setIsTwoFactorOpen] = useState(false);
+
+  const endSession = async (message?: string) => {
+    if (message) setLoginNoticeState(message);
+    clearActivity();
+    await signOutUser().catch((err) => console.error('[App] Sign-out failed:', err));
+  };
+
   // Firebase Auth session listener — the actual security gate. Runs once
   // on mount; fires again on every sign-in/sign-out.
   useEffect(() => {
     const unsubscribe = onAuthChange(async (fbUser) => {
       if (!fbUser) {
+        setFirebaseUser(null);
         setIsLoggedOut(true);
+        setMustChangePassword(false);
+        setRequire2fa(false);
+        setSession2fa(false);
+        setMyPendingAction(undefined);
         setIsAuthResolving(false);
         return;
       }
+      setIsAuthResolving(true);
       try {
-        const resolvedUser = await buildCurrentUserFromAuth(fbUser);
+        const access = await verifyUserAccess(fbUser);
+        if (!access.allowed) {
+          await endSession(access.deniedReason);
+          setIsAuthResolving(false);
+          return;
+        }
+
+        const usedCode = await sessionUsed2fa(fbUser);
+        const inUse = isEnrolledIn2fa(fbUser);
+
+        // A Super Admin switched 2FA off for this person: remove their
+        // authenticator now (they just signed in, so Firebase allows it).
+        if (access.twoFactor === 'off' && inUse) {
+          try {
+            await recordMy2faInUse(fbUser.uid, false);
+            await removeOwnAuthenticator(fbUser);
+            setLoginNotice(
+              'Two-step sign-in has been switched off for your account by a Super Admin. Sign in again with just your password.',
+              fbUser.email || undefined
+            );
+            await endSession();
+            setIsAuthResolving(false);
+            return;
+          } catch (e) {
+            console.warn('[App] Could not remove the authenticator:', e);
+          }
+        }
+
+        // Keep the "2FA ON / OFF" badge Super Admins see in step with reality
+        if (inUse && usedCode && !access.twoFactorEnrolled) recordMy2faInUse(fbUser.uid, true);
+        if (!inUse && access.twoFactorEnrolled) recordMy2faInUse(fbUser.uid, false);
+        recordLastLogin(fbUser.uid);
+
+        const resolvedUser = buildCurrentUserFromAccess(fbUser, access);
+        setFirebaseUser(fbUser);
+        setSignedInRole(resolvedUser.role);
         setCurrentUser(resolvedUser);
         saveCurrentUser(resolvedUser);
+        setMustChangePassword(access.mustChangePassword);
+        setRequire2fa(access.require2fa);
+        setGlobal2fa(access.global2fa);
+        setSession2fa(usedCode);
+        setEnrolled2fa(inUse);
+        setMyPendingAction(access.pendingAction);
+        setLoginNoticeState(null);
         setIsLoggedOut(false);
-        logAction('User Login', `${resolvedUser.name} (${resolvedUser.role}) authenticated and unlocked application.`);
+        logAction('User Login', `${resolvedUser.name} (${resolvedUser.role}) signed in${usedCode ? ' with 2FA' : ''}.`);
         showToast(`Welcome back, ${resolvedUser.name}!`);
       } catch (err) {
         console.error('[App] Failed to resolve signed-in user profile:', err);
-        showToast('Signed in, but could not load your profile. Contact your administrator.');
+        await endSession('Signed in, but your account could not be loaded. Try again or contact your administrator.');
       } finally {
         setIsAuthResolving(false);
       }
@@ -188,6 +277,63 @@ export function App() {
     return () => unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Watch the signed-in user's own account: blocked/removed ends the session
+  // at once; 2FA started/stopped and Super Admin requests show straight away.
+  useEffect(() => {
+    if (isLoggedOut || !firebaseUser) return;
+    return subscribeMyUserRecord(firebaseUser.uid, (rec) => {
+      setMyPendingAction(rec.pendingAction);
+      if (rec.exists) setRequire2fa(effectiveRequire2fa(global2fa, rec.twoFactor));
+      if (rec.exists && rec.role) {
+        setSignedInRole(rec.role);
+        setCurrentUser((cu) => {
+          if (cu.id !== firebaseUser.uid || cu.role === rec.role) return cu;
+          const updated = { ...cu, role: rec.role! };
+          saveCurrentUser(updated);
+          return updated;
+        });
+      }
+      if (!rec.exists || rec.blocked) {
+        endSession(rec.blocked ? BLOCKED_MESSAGE : 'Your Crew Control access has been removed.');
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedOut, firebaseUser?.uid, global2fa]);
+
+  // Fully signed in: account OK, own password set, 2FA used if required.
+  const appUnlocked = !isLoggedOut && !mustChangePassword && !(require2fa && !session2fa);
+
+  const handleSessionExpired = (message: string) => {
+    handleSaveAllSystemData();
+    endSession(message);
+  };
+
+  const answerPending = async (approve: boolean) => {
+    if (!myPendingAction) return;
+    const what = describePendingAction(myPendingAction, 'your');
+    const ok = window.confirm(
+      approve
+        ? `Approve ${myPendingAction.requestedByEmail}'s request to ${what}?${
+            myPendingAction.type === 'role' ? '' : '\nYou will be signed out.'
+          }`
+        : `Decline the request to ${what}?`
+    );
+    if (!ok) return;
+    setAnsweringPending(true);
+    try {
+      await answerMyPendingAction(myPendingAction, approve);
+      logAction(
+        approve ? 'Super Admin Request Approved' : 'Super Admin Request Declined',
+        `${currentUser.name} ${approve ? 'approved' : 'declined'} ${myPendingAction.requestedByEmail}'s request to ${what}.`,
+        'WARNING'
+      );
+    } catch (e) {
+      showToast((e as Error).message);
+    } finally {
+      setAnsweringPending(false);
+    }
+  };
 
   // Toast Banner State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -246,9 +392,12 @@ export function App() {
   // them before login just produces permission errors that never clear).
   // Restarts automatically whenever isLoggedOut flips, so logging out and
   // back in (possibly as a different user) gets a fresh subscription.
-  const isCrewRole = currentUser?.role === 'FLIGHT_CREW' || currentUser?.role === 'PILOT_CABIN';
+  const isCrewRole = signedInRole === 'FLIGHT_CREW' || signedInRole === 'PILOT_CABIN';
+  const isUserManager = signedInRole === 'SUPER_ADMIN' || signedInRole === 'ADMIN';
+  const signedInEmail = firebaseUser?.email || '';
+  const signedInUid = firebaseUser?.uid || '';
   useEffect(() => {
-    if (isLoggedOut) return;
+    if (!appUnlocked) return;
 
     const unsubscribe = subscribeToRealtimeSync({
       onSyncStatusChange: (status) => setSyncStatus(status),
@@ -307,12 +456,15 @@ export function App() {
           localStorage.setItem('zambia_airways_acknowledgments', JSON.stringify(items));
         }
       },
-    }, isCrewRole && currentUser?.email ? { crewEmail: currentUser.email } : undefined);
+    }, {
+      crewEmail: isCrewRole && signedInEmail ? signedInEmail : undefined,
+      ownUserId: isUserManager ? undefined : signedInUid,
+    });
 
     return () => {
       unsubscribe();
     };
-  }, [isLoggedOut, isCrewRole, currentUser?.email]);
+  }, [appUnlocked, isCrewRole, isUserManager, signedInEmail, signedInUid]);
 
   // Proactively cache critical roster snapshot in Service Worker & Offline Storage
   useEffect(() => {
@@ -393,7 +545,7 @@ export function App() {
     // invalidated — signing out immediately would cause those in-flight
     // writes to arrive after auth is gone and get rejected.
     setTimeout(() => {
-      signOutUser().catch((err) => console.error('[App] Sign-out failed:', err));
+      endSession();
     }, 800);
   };
 
@@ -403,12 +555,7 @@ export function App() {
       logAction('Password Changed', `${currentUser.name} updated their account password.`);
       showToast('Your account password has been successfully updated!');
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code;
-      const message =
-        code === 'auth/wrong-password' || code === 'auth/invalid-credential'
-          ? 'Current password is incorrect.'
-          : 'Could not update password. Please try again.';
-      showToast(message);
+      showToast((err as Error)?.message || 'Could not update password. Please try again.');
       throw err;
     }
   };
@@ -717,7 +864,32 @@ export function App() {
   }
 
   if (isLoggedOut) {
-    return <LockScreenView />;
+    return <LockScreenView notice={loginNotice} />;
+  }
+
+  // Signed in with the temporary password: choose your own first
+  if (mustChangePassword) {
+    return (
+      <>
+        <SessionGuard user={firebaseUser} onExpire={handleSessionExpired} />
+        <FirstLoginPasswordChange
+          email={currentUser.email}
+          onPasswordChanged={() => endSession()}
+          onSkipped={() => setMustChangePassword(false)}
+          onSignOut={() => endSession()}
+        />
+      </>
+    );
+  }
+
+  // 2FA required but this session didn't use it (not set up yet, or signed in without it)
+  if (require2fa && !session2fa) {
+    return (
+      <>
+        <SessionGuard user={firebaseUser} onExpire={handleSessionExpired} />
+        <TwoFactorRequired email={currentUser.email} enrolled={enrolled2fa} onSignOut={() => endSession()} />
+      </>
+    );
   }
 
   return (
@@ -741,6 +913,7 @@ export function App() {
           onSaveAllData={handleSaveAllSystemData}
           onLogout={handleLogout}
           onChangePasswordClick={() => setIsChangePasswordOpen(true)}
+          onTwoFactorClick={() => setIsTwoFactorOpen(true)}
           currentUser={currentUser}
           systemUsers={systemUsers}
           onSelectCurrentUser={handleSelectCurrentUser}
@@ -748,6 +921,31 @@ export function App() {
           onOpenMobileDrawer={() => setIsMobileDrawerOpen(true)}
           onOpenMobileAppModal={() => setIsMobileAppModalOpen(true)}
         />
+
+        {/* Another Super Admin asked this Super Admin to confirm a change to their own account */}
+        {myPendingAction && (
+          <div className="mx-4 mt-3 p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <span>
+              <strong>{myPendingAction.requestedByEmail}</strong> asks you to confirm: {describePendingAction(myPendingAction, 'your')}.
+            </span>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => answerPending(true)}
+                disabled={answeringPending}
+                className="px-3 py-1.5 bg-[#2E2C2B] hover:bg-black text-white rounded-lg font-bold disabled:opacity-60"
+              >
+                Approve
+              </button>
+              <button
+                onClick={() => answerPending(false)}
+                disabled={answeringPending}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 rounded-lg font-bold disabled:opacity-60"
+              >
+                Decline
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Floating Notification Toast */}
         {toastMessage && (
@@ -765,7 +963,11 @@ export function App() {
               currentUser={currentUser}
               onSelectCurrentUser={handleSelectCurrentUser}
               onUpdateUsers={handleUpdateUsers}
-              onDeleteUser={handleDeleteUser}
+              onDeleteUser={(userId) => setSystemUsers((list) => list.filter((u) => u.id !== userId))}
+              onAccountAction={(message, audit) => {
+                if (audit) logAction(audit.action, audit.details, audit.severity || 'INFO');
+                showToast(message);
+              }}
             />
           )}
 
@@ -1037,6 +1239,21 @@ export function App() {
       <MobileAppInstallModal
         isOpen={isMobileAppModalOpen}
         onClose={() => setIsMobileAppModalOpen(false)}
+      />
+
+      {/* Inactivity / maximum session length sign-out */}
+      <SessionGuard user={firebaseUser} onExpire={handleSessionExpired} />
+
+      {/* Two-step sign-in set-up / status */}
+      <TwoFactorModal
+        isOpen={isTwoFactorOpen}
+        onClose={() => setIsTwoFactorOpen(false)}
+        onEnrolled={() => {
+          setIsTwoFactorOpen(false);
+          setLoginNotice('Two-step sign-in is on. Sign in with your password and the code from your app.', currentUser.email);
+          logAction('2FA Enabled', `${currentUser.name} set up authenticator-app two-step sign-in.`);
+          endSession();
+        }}
       />
 
       {/* Change Password Modal */}

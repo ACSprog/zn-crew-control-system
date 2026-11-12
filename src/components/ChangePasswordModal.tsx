@@ -39,8 +39,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     e.preventDefault();
     setErrorMsg('');
 
-    if (!newPassword || newPassword.length < 6) {
-      setErrorMsg('New password must be at least 6 characters long.');
+    if (!newPassword || newPassword.length < 8) {
+      setErrorMsg('New password must be at least 8 characters long.');
       return;
     }
 
@@ -62,8 +62,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       setConfirmPassword('');
       setErrorMsg('');
       onClose();
-    } catch {
-      setErrorMsg('Current password is incorrect. Please check and try again.');
+    } catch (err) {
+      setErrorMsg((err as Error)?.message || 'Current password is incorrect. Please check and try again.');
     } finally {
       setIsSubmitting(false);
     }

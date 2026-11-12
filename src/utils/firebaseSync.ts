@@ -36,7 +36,7 @@ import {
 
 import firebaseConfigData from '../../firebase-applet-config.json';
 
-const firebaseConfig = {
+export const firebaseWebConfig = {
   apiKey: firebaseConfigData.apiKey,
   authDomain: firebaseConfigData.authDomain,
   projectId: firebaseConfigData.projectId,
@@ -46,13 +46,13 @@ const firebaseConfig = {
   measurementId: firebaseConfigData.measurementId || undefined,
 };
 
-export const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseWebConfig);
 
 // Google Analytics for Firebase (free, no billing needed). Only started in
 // production builds, and only where the browser supports it (it isn't
 // available in some private-browsing modes or non-browser contexts).
 export let analytics: Analytics | null = null;
-if (!import.meta.env.DEV && firebaseConfig.measurementId) {
+if (!import.meta.env.DEV && firebaseWebConfig.measurementId) {
   isAnalyticsSupported()
     .then((ok) => {
       if (ok) analytics = getAnalytics(app);
@@ -367,9 +367,14 @@ export async function syncRulesToFirebase(rules: LegalityRules) {
   }
 }
 
-export async function syncUsersToFirebase(users: SystemUser[]) {
-  const withoutPasswords = users.map(({ password: _password, ...rest }) => rest);
-  return queueCollectionWrite('users', withoutPasswords as unknown as Array<Record<string, unknown>>);
+/**
+ * User accounts are no longer bulk-synced: every change goes through
+ * src/utils/accounts.ts (one targeted write per action), which the security
+ * rules check against the admin's role. A bulk "write the whole list" could
+ * otherwise overwrite or delete other people's accounts.
+ */
+export async function syncUsersToFirebase(_users: SystemUser[]): Promise<void> {
+  return Promise.resolve();
 }
 
 export async function syncAuditLogsToFirebase(auditLogs: AuditLog[]) {
@@ -432,7 +437,10 @@ export async function pushAllDataToFirebase(data: {
  * to the crew member's own documents and the audit log isn't loaded.
  */
 export interface RealtimeScope {
-  crewEmail: string;
+  /** Crew logins: only their own crew record, leave and acknowledgements */
+  crewEmail?: string;
+  /** Not a user manager: only their own users/{uid} profile */
+  ownUserId?: string;
 }
 
 export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks, scope?: RealtimeScope): () => void {
@@ -458,14 +466,25 @@ export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks, scope?: Re
   const unsubFlights = subscribeCollection<Flight>('flights', callbacks.onFlightsUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubAssignments = subscribeCollection<Assignment>('assignments', callbacks.onAssignmentsUpdate, updateConnectionStatus, handleSnapshotError);
   const unsubFleet = subscribeCollection<AircraftFleet>('fleet', callbacks.onFleetUpdate, updateConnectionStatus, handleSnapshotError, 'registration');
-  const unsubUsers = subscribeCollection<SystemUser>('users', callbacks.onUsersUpdate, updateConnectionStatus, handleSnapshotError);
+  // Only Admins / Super Admins may list every account (see firestore.rules);
+  // everyone else just sees their own profile.
+  const unsubUsers = scope?.ownUserId
+    ? onSnapshot(
+        doc(db, 'users', scope.ownUserId),
+        (snap) => {
+          updateConnectionStatus();
+          if (snap.exists()) callbacks.onUsersUpdate?.([{ ...(snap.data() as SystemUser), id: snap.id }]);
+        },
+        (err) => handleSnapshotError('users', err)
+      )
+    : subscribeCollection<SystemUser>('users', callbacks.onUsersUpdate, updateConnectionStatus, handleSnapshotError);
 
   let unsubCrew: () => void;
   let unsubLeave: () => void = () => {};
   let unsubAudit: () => void = () => {};
   let unsubAcks: () => void = () => {};
 
-  if (scope) {
+  if (scope?.crewEmail) {
     const email = scope.crewEmail.trim().toLowerCase();
     let currentCrewId = '';
     callbacks.onAuditLogsUpdate?.([]);

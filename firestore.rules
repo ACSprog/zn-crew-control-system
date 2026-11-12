@@ -3,39 +3,103 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ---------------------------------------------------------------------
-    // Role model: every signed-in user's Firebase Auth ID token carries a
-    // `role` custom claim, set only by an administrator via
-    // scripts/create-user.mjs (never settable by the client). Nothing in
-    // this file trusts any field inside a Firestore document for access
-    // control — only the token itself.
+    // Access model (same design as the Zambia Airways QSA Reporting System):
+    // a person's role and status live on their profile users/{uid}, which
+    // only System Admins / Super Admins can change (rules below). Every
+    // request also checks: account ACTIVE, not locked after 5 wrong
+    // passwords, two-step sign-in (2FA) used if required, and a session
+    // signed in less than 12 hours ago.
+    //
+    // NOTE: Firestore allows 10 document lookups (get/exists) per request.
+    // Repeated lookups of the same document are cached, and these helpers
+    // only ever read users/{me}, settings/security and signInLocks/{email}.
     // ---------------------------------------------------------------------
 
     function signedIn() {
       return request.auth != null;
     }
 
+    function myProfilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function me() {
+      return get(myProfilePath()).data;
+    }
+
+    // Signed in with the second step (authenticator-app code) in this session
+    function has2fa() {
+      return 'sign_in_second_factor' in request.auth.token.firebase;
+    }
+
+    // settings/security.require2fa: 2FA required for everyone
+    function globalRequire2fa() {
+      return exists(/databases/$(database)/documents/settings/security)
+        && get(/databases/$(database)/documents/settings/security).data.get('require2fa', false) == true;
+    }
+
+    // Per person (set by a Super Admin): users/{uid}.twoFactor 'on' (required
+    // even if not for everyone) or 'off' (not required); absent = follow everyone.
+    function twoFactorOk(p) {
+      let mine = p.get('twoFactor', '');
+      return has2fa() || mine == 'off' || (mine != 'on' && !globalRequire2fa());
+    }
+
+    // Not locked after 5 wrong passwords (signInLocks/{email}); an Admin's
+    // password-reset email unlocks it.
+    function notLockedOut() {
+      let email = request.auth.token.get('email', '').lower();
+      return email == ''
+        || !exists(/databases/$(database)/documents/signInLocks/$(email))
+        || get(/databases/$(database)/documents/signInLocks/$(email)).data.get('locked', false) != true;
+    }
+
+    // Backstop for the session limit: refuse sessions signed in > 12 hours ago
+    function sessionFresh() {
+      return request.time.toMillis() < (request.auth.token.auth_time + 43200) * 1000;
+    }
+
+    function isActiveUser() {
+      return signedIn()
+        && sessionFresh()
+        && exists(myProfilePath())
+        && me().get('status', 'ACTIVE') == 'ACTIVE'
+        && twoFactorOk(me())
+        && notLockedOut();
+    }
+
     function role() {
-      return request.auth.token.role;
+      return me().get('role', '');
+    }
+
+    function isSuperAdmin() {
+      return isActiveUser() && role() == 'SUPER_ADMIN';
     }
 
     function isAdmin() {
-      return signedIn() && role() in ['SUPER_ADMIN', 'ADMIN'];
+      return isActiveUser() && role() in ['SUPER_ADMIN', 'ADMIN'];
+    }
+
+    // Who can manage user accounts: Super Admins (everyone) and System Admins
+    // (only roles below Admin)
+    function isUserManager() {
+      return isAdmin();
     }
 
     function isScheduler() {
-      return signedIn() && role() in ['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER'];
+      return isActiveUser() && role() in ['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER'];
     }
 
     function isChiefPilot() {
-      return signedIn() && role() == 'CHIEF_PILOT';
+      return isActiveUser() && role() == 'CHIEF_PILOT';
     }
 
     function isAuditor() {
-      return signedIn() && role() == 'AUDITOR';
+      return isActiveUser() && role() == 'AUDITOR';
     }
 
     function isCrewSelf() {
-      return signedIn() && role() in ['FLIGHT_CREW', 'PILOT_CABIN'];
+      return isActiveUser() && role() in ['FLIGHT_CREW', 'PILOT_CABIN'];
     }
 
     function canManageRoster() {
@@ -56,12 +120,12 @@ service cloud.firestore {
     }
 
     match /flights/{id} {
-      allow read: if signedIn();
+      allow read: if isActiveUser();
       allow write: if canManageRoster();
     }
 
     match /assignments/{id} {
-      allow read: if signedIn();
+      allow read: if isActiveUser();
       allow write: if canManageRoster();
     }
 
@@ -77,23 +141,208 @@ service cloud.firestore {
     }
 
     match /fleet/{id} {
-      allow read: if signedIn();
+      allow read: if isActiveUser();
       allow write: if isAdmin();
     }
 
+    // ---------------------------------------------------------------------
+    // User accounts (users/{uid})
+    // ---------------------------------------------------------------------
+
+    function validRole(r) {
+      return r in ['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER', 'CHIEF_PILOT', 'AUDITOR', 'FLIGHT_CREW', 'PILOT_CABIN'];
+    }
+
+    // Roles a System Admin may hand out or manage
+    function juniorRole(r) {
+      return r in ['OCC_CONTROLLER', 'SCHEDULER', 'CHIEF_PILOT', 'AUDITOR', 'FLIGHT_CREW', 'PILOT_CABIN'];
+    }
+
+    function userChanges() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function isSuperAdminDoc(d) {
+      return d.get('role', '') == 'SUPER_ADMIN';
+    }
+
+    // Field checks for any profile written by an admin
+    function validUserFields(d) {
+      return d.email is string && d.email.size() <= 320
+        && validRole(d.get('role', ''))
+        && d.get('status', 'ACTIVE') in ['ACTIVE', 'INACTIVE', 'SUSPENDED']
+        && d.get('twoFactor', 'on') in ['on', 'off']
+        && d.get('name', '') is string && d.get('name', '').size() <= 200
+        && d.get('mustChangePassword', false) is bool
+        && d.get('tempPasswordHash', '') is string && d.get('tempPasswordHash', '').size() <= 128;
+    }
+
+    function validNewUser(uid) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['id', 'name', 'email', 'staffNumber', 'role', 'department', 'base', 'status',
+          'avatarInitials', 'permissions', 'mustChangePassword', 'tempPasswordHash', 'createdAt', 'createdBy'])
+        && validUserFields(d)
+        && d.get('id', uid) == uid;
+    }
+
+    // ---- Two-person rule for Super Admin accounts ----
+    // Another Super Admin can only REQUEST to remove, block or change the role
+    // of a Super Admin (users/{uid}.pendingAction); that Super Admin approves.
+
+    function isPendingActionRequest(uid) {
+      let pa = request.resource.data.pendingAction;
+      return request.auth.uid != uid
+        && isSuperAdminDoc(resource.data)
+        && userChanges().hasOnly(['pendingAction'])
+        && (!('pendingAction' in resource.data) || resource.data.pendingAction.requestedBy == request.auth.uid)
+        && pa.keys().hasOnly(['type', 'newRole', 'requestedBy', 'requestedByEmail', 'requestedAt'])
+        && pa.type in ['remove', 'block', 'role']
+        && (pa.type != 'role' || (validRole(pa.get('newRole', '')) && pa.get('newRole', '') != 'SUPER_ADMIN'))
+        && pa.requestedBy == request.auth.uid
+        && pa.requestedByEmail is string && pa.requestedByEmail.size() <= 320
+        && pa.requestedAt == request.time
+        && isSuperAdmin();
+    }
+
+    function isPendingActionCancel(uid) {
+      return request.auth.uid != uid
+        && userChanges().hasOnly(['pendingAction'])
+        && !('pendingAction' in request.resource.data)
+        && resource.data.pendingAction.requestedBy == request.auth.uid
+        && isSuperAdmin();
+    }
+
+    // The request still comes from an active Super Admin
+    function pendingRequesterIsSuperAdmin() {
+      let requester = get(/databases/$(database)/documents/users/$(resource.data.pendingAction.requestedBy)).data;
+      return requester.get('role', '') == 'SUPER_ADMIN' && requester.get('status', 'ACTIVE') == 'ACTIVE';
+    }
+
+    // The Super Admin concerned answering a request about their own account
+    function isOwnPendingActionAnswer(uid) {
+      let pa = resource.data.pendingAction;
+      let after = request.resource.data;
+      return signedIn() && request.auth.uid == uid
+        && 'pendingAction' in resource.data
+        && !('pendingAction' in after)
+        && (
+          userChanges().hasOnly(['pendingAction'])
+          || (pa.type == 'block' && pendingRequesterIsSuperAdmin()
+            && userChanges().hasOnly(['pendingAction', 'status']) && after.status == 'INACTIVE')
+          || (pa.type == 'role' && pendingRequesterIsSuperAdmin()
+            && userChanges().hasOnly(['pendingAction', 'role']) && after.role == pa.newRole)
+        );
+    }
+
     match /users/{uid} {
+      // Everyone can read their own profile (needed at sign-in, before 2FA);
+      // System Admins / Super Admins can list everyone.
+      allow read: if (signedIn() && request.auth.uid == uid) || isUserManager();
+
+      // New accounts: Super Admins any role, System Admins only below Admin
+      allow create: if request.auth.uid != uid
+        && validNewUser(uid)
+        && isUserManager()
+        && (isSuperAdmin() || juniorRole(request.resource.data.role));
+
+      // Accounts below Super Admin. Never the email, 2FA enrolment record or
+      // password flags; per-person 2FA on/off is for Super Admins only.
+      allow update: if request.auth.uid != uid
+        && !isSuperAdminDoc(resource.data)
+        && validUserFields(request.resource.data)
+        && !userChanges().hasAny(['email', 'pendingAction', 'twoFactorEnrolled', 'mustChangePassword', 'tempPasswordHash', 'createdAt', 'createdBy', 'id'])
+        && isUserManager()
+        && (!userChanges().hasAny(['twoFactor']) || isSuperAdmin())
+        && (isSuperAdmin()
+          || (juniorRole(request.resource.data.get('role', '')) && juniorRole(resource.data.get('role', ''))));
+
+      // Another Super Admin: display details only, no confirmation needed
+      allow update: if request.auth.uid != uid && isSuperAdminDoc(resource.data)
+        && userChanges().hasOnly(['name', 'staffNumber', 'department', 'base', 'avatarInitials'])
+        && isSuperAdmin();
+      // Unblocking a Super Admin needs no confirmation (they can't sign in to give it)
+      allow update: if request.auth.uid != uid && isSuperAdminDoc(resource.data)
+        && userChanges().hasOnly(['status']) && request.resource.data.status == 'ACTIVE'
+        && isSuperAdmin();
+      // Starting / stopping 2FA for another Super Admin (nobody can for themselves)
+      allow update: if request.auth.uid != uid && isSuperAdminDoc(resource.data)
+        && userChanges().hasOnly(['twoFactor'])
+        && request.resource.data.twoFactor in ['on', 'off']
+        && isSuperAdmin();
+      allow update: if isPendingActionRequest(uid) || isPendingActionCancel(uid) || isOwnPendingActionAnswer(uid);
+
+      // Own profile: last sign-in time, display details, whether they use an
+      // authenticator app ("true" only from a session that used the code), and
+      // clearing the temporary-password flag. Never role, status, email,
+      // staff number, permissions or the per-person 2FA setting.
+      allow update: if signedIn() && request.auth.uid == uid
+        && userChanges().hasOnly(['lastLogin'])
+        && request.resource.data.lastLogin is string;
+      allow update: if isActiveUser() && request.auth.uid == uid
+        && userChanges().hasOnly(['name', 'department', 'base', 'avatarInitials'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200;
+      allow update: if signedIn() && request.auth.uid == uid
+        && userChanges().hasOnly(['twoFactorEnrolled'])
+        && request.resource.data.twoFactorEnrolled is bool
+        && (request.resource.data.twoFactorEnrolled == false || has2fa());
+      allow update: if signedIn() && request.auth.uid == uid
+        && userChanges().hasOnly(['mustChangePassword', 'tempPasswordHash'])
+        && request.resource.data.mustChangePassword == false
+        && !('tempPasswordHash' in request.resource.data);
+
+      allow delete: if request.auth.uid != uid
+        && !isSuperAdminDoc(resource.data)
+        && isUserManager()
+        && (isSuperAdmin() || juniorRole(resource.data.get('role', '')));
+      // A Super Admin approving another Super Admin's request to remove them
+      allow delete: if signedIn() && request.auth.uid == uid
+        && isSuperAdminDoc(resource.data)
+        && resource.data.get('pendingAction', {'type': ''}).type == 'remove'
+        && pendingRequesterIsSuperAdmin();
+    }
+
+    // Security settings: readable by signed-in users so the app knows whether
+    // 2FA is required. From the app it can only be switched ON for everyone
+    // (from a session that used 2FA); `npm run 2fa:relax` is the emergency off.
+    match /settings/{docId} {
       allow read: if signedIn();
-      // Users may update their own profile, but never their role, permissions
-      // or email (the UI shows menus based on these fields).
-      allow create, delete: if isAdmin();
-      allow update: if isAdmin() ||
-        (signedIn() && request.auth.uid == uid &&
-         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'permissions', 'email', 'staffNumber']));
+      allow create, update: if docId == 'security'
+        && isSuperAdmin()
+        && request.resource.data.keys().hasOnly(['require2fa', 'updatedBy', 'updatedAt'])
+        && request.resource.data.require2fa == true
+        && has2fa();
+      allow delete: if false;
+    }
+
+    // Failed sign-in counter per email (document ID = lower-case email). The
+    // sign-in page, before anyone is signed in, may only add ONE failure at a
+    // time; the 5th locks the account. Only an Admin unlocks (their "send
+    // password reset" deletes it). Users clear their own counter after a
+    // successful sign-in, unless locked.
+    match /signInLocks/{email} {
+      allow get: if true;
+      allow list: if isUserManager();
+      allow create: if email == email.lower() && email.size() <= 320
+        && request.resource.data.keys().hasOnly(['failures', 'locked', 'lastFailureAt'])
+        && request.resource.data.failures == 1
+        && request.resource.data.locked == false
+        && request.resource.data.lastFailureAt == request.time;
+      allow update: if resource.data.get('locked', false) == false
+        && request.resource.data.keys().hasOnly(['failures', 'locked', 'lastFailureAt', 'lockedAt'])
+        && request.resource.data.failures == resource.data.failures + 1
+        && request.resource.data.lastFailureAt == request.time
+        && request.resource.data.locked == (request.resource.data.failures >= 5)
+        && (request.resource.data.locked
+          ? request.resource.data.get('lockedAt', null) == request.time
+          : !('lockedAt' in request.resource.data));
+      allow delete: if isUserManager()
+        || (signedIn() && request.auth.token.get('email', '').lower() == email
+          && resource.data.get('locked', false) == false);
     }
 
     match /auditLogs/{id} {
       allow read: if canReadAllOperationalData();
-      allow create: if signedIn();
+      allow create: if isActiveUser();
       allow update, delete: if false;
     }
 
@@ -108,7 +357,7 @@ service cloud.firestore {
     }
 
     match /config/{id} {
-      allow read: if signedIn();
+      allow read: if isActiveUser();
       allow write: if isAdmin();
     }
 
@@ -120,12 +369,12 @@ service cloud.firestore {
     }
 
     match /inAppNotifications/{id} {
-      allow read: if signedIn() &&
+      allow read: if isActiveUser() &&
         (resource.data.targetEmail == null || resource.data.targetEmail == myEmail());
       allow create: if isScheduler() &&
         request.resource.data.readBy == [] &&
         (request.resource.data.targetEmail == null || request.resource.data.targetEmail is string);
-      allow update: if signedIn() &&
+      allow update: if isActiveUser() &&
         (resource.data.targetEmail == null || resource.data.targetEmail == myEmail()) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']) &&
         request.resource.data.readBy.hasAll(resource.data.readBy) &&
@@ -162,12 +411,12 @@ service cloud.firestore {
     // structure rather than a document field (and needs no composite
     // index, unlike a flat collection filtered by a uid field).
     match /aiChatSessions/{uid}/sessions/{sessionId} {
-      allow read, write: if signedIn() && request.auth.uid == uid;
+      allow read, write: if isActiveUser() && request.auth.uid == uid;
 
       match /messages/{messageId} {
-        allow read: if signedIn() && request.auth.uid == uid;
-        allow create: if signedIn() && request.auth.uid == uid;
-        allow delete: if signedIn() && request.auth.uid == uid;
+        allow read: if isActiveUser() && request.auth.uid == uid;
+        allow create: if isActiveUser() && request.auth.uid == uid;
+        allow delete: if isActiveUser() && request.auth.uid == uid;
         allow update: if false;
       }
     }

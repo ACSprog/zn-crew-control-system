@@ -82,6 +82,7 @@ read -r -p "  Path to the key file (Enter to skip): " KEY
 KEY="${KEY%\"}"; KEY="${KEY#\"}"   # strip quotes from drag-and-drop paths
 if [[ -z "$KEY" ]]; then
   warn "Skipped. Re-run this script later to do step 5."
+  echo "  Two-step sign-in: run  npm run 2fa:enable  (see docs/LOGIN_AND_2FA.md)"
   exit 0
 fi
 [[ -f "$KEY" ]] || { echo "  ✘ File not found: $KEY"; exit 1; }
@@ -106,3 +107,5 @@ else
 fi
 
 bold "All done. Sign in at https://$PROJECT_ID.web.app with $ADMIN_EMAIL"
+echo "  Next (recommended): turn on two-step sign-in with  npm run 2fa:enable"
+echo "  See docs/LOGIN_AND_2FA.md"
