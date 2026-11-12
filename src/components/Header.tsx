@@ -34,6 +34,7 @@ interface HeaderProps {
   onSaveAllData?: () => void;
   onLogout?: () => void;
   onChangePasswordClick?: () => void;
+  onTwoFactorClick?: () => void;
   openPositionsCount?: number;
   onNavigate?: (view: ActiveView) => void;
   currentUser?: SystemUser;
@@ -165,6 +166,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSaveAllData,
   onLogout,
   onChangePasswordClick,
+  onTwoFactorClick,
   openPositionsCount = 0,
   onNavigate,
   currentUser,
@@ -575,6 +577,19 @@ export const Header: React.FC<HeaderProps> = ({
                     >
                       <KeyRound className="w-3.5 h-3.5" />
                       <span>Change My Password</span>
+                    </button>
+                  )}
+
+                  {onTwoFactorClick && (
+                    <button
+                      onClick={() => {
+                        setIsUserDropdownOpen(false);
+                        onTwoFactorClick();
+                      }}
+                      className="w-full px-3 py-1.5 bg-slate-100 hover:bg-[#F37C1C] hover:text-white text-slate-800 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Two-Step Sign-In (2FA)</span>
                     </button>
                   )}
 

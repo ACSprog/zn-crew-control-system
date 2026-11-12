@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   SystemUser,
   SystemUserRole,
@@ -33,14 +33,56 @@ import {
 } from 'lucide-react';
 
 import { PasswordModal } from '../components/PasswordModal';
-import { sendPasswordReset } from '../utils/authService';
+import {
+  addAccount,
+  assignableRoles,
+  canManageAccount,
+  canManageUsers,
+  cancelSuperAdminAction,
+  describePendingAction,
+  enableRequire2fa,
+  getRequire2fa,
+  loadSignInLocks,
+  needsConfirmation,
+  removeAccount,
+  requestSuperAdminAction,
+  reset2faCommand,
+  sendAccountPasswordReset,
+  setAccountBlocked,
+  setAccountTwoFactor,
+  updateAccount,
+  updateOwnProfile,
+  type AddAccountResult,
+} from '../utils/accounts';
+import type { PendingAdminAction } from '../utils/authService';
+
+/** Account fields stored on users/{uid} that aren't part of the SystemUser type. */
+type AccountRow = SystemUser & {
+  twoFactor?: 'on' | 'off';
+  twoFactorEnrolled?: boolean;
+  mustChangePassword?: boolean;
+  pendingAction?: PendingAdminAction;
+};
 interface UserAccessViewProps {
   users: SystemUser[];
   currentUser: SystemUser;
   onSelectCurrentUser: (user: SystemUser) => void;
   onUpdateUsers: (updatedUsers: SystemUser[]) => void;
   onDeleteUser?: (userId: string) => void;
+  /** Record an account change in the audit log and show a message */
+  onAccountAction?: (message: string, audit?: { action: string; details: string; severity?: 'INFO' | 'WARNING' | 'CRITICAL' }) => void;
 }
+
+const ROLE_OPTION_TEXT: Record<SystemUserRole, string> = {
+  SUPER_ADMIN: 'Super Admin / IT (System Configuration & Security)',
+  ADMIN: 'System Admin (Manages users below Admin)',
+  OCC_CONTROLLER: 'OCC Controller / Duty Officer (Roster Read/Write & Overrides)',
+  SCHEDULER: 'Crew Scheduler / Dispatcher (Full Roster Read/Write)',
+  CHIEF_PILOT: 'Line Management / Chief Pilot (Department Read-Only & Approvals)',
+  FLIGHT_CREW: 'Flight Crew (Restricted Individual Self-Service)',
+  PILOT_CABIN: 'Flight Crew – Pilot / Cabin (Own Roster Only)',
+  AUDITOR: 'Safety Auditor / Inspector (Read-Only Compliance & History)',
+};
 
 const ROLE_BADGES: Record<SystemUserRole, { label: string; color: string; bg: string }> = {
   SUPER_ADMIN: {
@@ -91,7 +133,52 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
   onSelectCurrentUser,
   onUpdateUsers,
   onDeleteUser,
+  onAccountAction,
 }) => {
+  const iManageUsers = canManageUsers(currentUser);
+  const isSuperAdmin = currentUser.role === 'SUPER_ADMIN';
+  const [locks, setLocks] = useState<Record<string, { failures: number; locked: boolean }>>({});
+  const [require2faAll, setRequire2faAll] = useState(false);
+  const [securityMsg, setSecurityMsg] = useState<string | null>(null);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountInfo, setAccountInfo] = useState<string | null>(null);
+  const [createdResult, setCreatedResult] = useState<(AddAccountResult & { email: string; name: string }) | null>(null);
+  const [copiedTemp, setCopiedTemp] = useState(false);
+
+  const notify = (message: string, action?: string, details?: string, severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO') =>
+    onAccountAction?.(message, action ? { action, details: details || message, severity } : undefined);
+
+  // Wrong-password lock status and the "2FA for everyone" setting
+  const emailsKey = users.map((u) => u.email).join('|');
+  useEffect(() => {
+    if (!iManageUsers) return;
+    loadSignInLocks(users.map((u) => u.email)).then(setLocks);
+    getRequire2fa().then(setRequire2faAll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emailsKey, iManageUsers]);
+
+  const lockOf = (u: SystemUser) => locks[(u.email || '').toLowerCase()];
+
+  const twoFactorBadge = (u: AccountRow) => {
+    const required = u.twoFactor === 'on' || (require2faAll && u.twoFactor !== 'off');
+    if (u.twoFactorEnrolled) return { label: '2FA ON', cls: 'bg-emerald-100 text-emerald-800' };
+    if (required) return { label: '2FA SET-UP PENDING', cls: 'bg-amber-100 text-amber-800' };
+    return { label: '2FA OFF', cls: 'bg-slate-100 text-slate-500' };
+  };
+
+  const runAccountAction = async (fn: () => Promise<void>) => {
+    setAccountBusy(true);
+    setAccountError(null);
+    setAccountInfo(null);
+    try {
+      await fn();
+    } catch (e) {
+      setAccountError((e as Error).message);
+    } finally {
+      setAccountBusy(false);
+    }
+  };
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoleFilter, setSelectedRoleFilter] = useState<string>('ALL');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -109,8 +196,18 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
     if (!editingUser) return;
     setResetStatus('sending');
     try {
-      await sendPasswordReset(editingUser.email);
+      const wasLocked = await sendAccountPasswordReset(editingUser.email);
       setResetStatus('sent');
+      if (wasLocked) setLocks((l) => {
+        const next = { ...l };
+        delete next[editingUser.email.toLowerCase()];
+        return next;
+      });
+      notify(
+        wasLocked ? `Unlocked ${editingUser.name} and sent a password reset email.` : `Password reset email sent to ${editingUser.email}.`,
+        wasLocked ? 'Account Unlocked' : 'Password Reset Sent',
+        `${currentUser.name} ${wasLocked ? 'unlocked and ' : ''}sent a password reset email to ${editingUser.email}.`
+      );
       setTimeout(() => setResetStatus('idle'), 5000);
     } catch (err) {
       console.error('[UserAccessView] Password reset email failed:', err);
@@ -118,6 +215,7 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
       setTimeout(() => setResetStatus('idle'), 5000);
     }
   };
+
   const [formStaffNumber, setFormStaffNumber] = useState('');
   const [formRole, setFormRole] = useState<SystemUserRole>('OCC_CONTROLLER');
   const [formDepartment, setFormDepartment] = useState('Operations Control Center');
@@ -146,6 +244,9 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
 
   const handleOpenAddModal = () => {
     setEditingUser(null);
+    setCreatedResult(null);
+    setAccountError(null);
+    setAccountInfo(null);
     setFormName('');
     setFormEmail('');
     setFormStaffNumber(`ZA-USR-${Math.floor(100 + Math.random() * 900)}`);
@@ -168,6 +269,9 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
 
   const handleOpenEditModal = (userToEdit: SystemUser) => {
     setEditingUser(userToEdit);
+    setCreatedResult(null);
+    setAccountError(null);
+    setAccountInfo(null);
     setFormName(userToEdit.name);
     setFormEmail(userToEdit.email);
     setFormStaffNumber(userToEdit.staffNumber);
@@ -255,66 +359,131 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
     }
   };
 
-  const handleSaveUser = (e: React.FormEvent) => {
+  const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const initials = formName
-      .split(' ')
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2) || 'ZA';
 
     if (editingUser) {
-      // Update existing
-      const updated = users.map((u) => {
-        if (u.id === editingUser.id) {
-          return {
-            ...u,
-            name: formName,
-            email: formEmail,
-            staffNumber: formStaffNumber,
-            role: formRole,
-            department: formDepartment,
-            base: formBase,
-            status: formStatus,
-            avatarInitials: initials,
-            permissions: formPermissions,
-          };
+      const isSelf = editingUser.id === currentUser.id;
+      await runAccountAction(async () => {
+        if (isSelf) {
+          // Own account: display details only (role/status/2FA are changed by another admin)
+          await updateOwnProfile(editingUser.id, { name: formName, department: formDepartment, base: formBase });
+          notify('Your profile was updated.', 'Profile Updated', `${currentUser.name} updated their own profile details.`);
+          setIsAddModalOpen(false);
+          return;
         }
-        return u;
+        if (!canManageAccount(currentUser, editingUser)) {
+          throw new Error('You can only manage accounts below your own level.');
+        }
+        await updateAccount(editingUser, {
+          name: formName,
+          staffNumber: formStaffNumber,
+          department: formDepartment,
+          base: formBase,
+          role: formRole,
+          permissions: formPermissions,
+        });
+        if (needsConfirmation(editingUser) && formRole !== editingUser.role) {
+          await requestSuperAdminAction(editingUser, 'role', formRole, { uid: currentUser.id, email: currentUser.email });
+          notify(
+            `Request sent: ${editingUser.name} must approve changing their role.`,
+            'Super Admin Change Requested',
+            `${currentUser.name} asked ${editingUser.email} to approve a role change to ${formRole}.`,
+            'WARNING'
+          );
+        } else {
+          notify(
+            `Saved ${formName}'s account.`,
+            'User Account Updated',
+            `${currentUser.name} updated ${editingUser.email}: role ${formRole}.`,
+            formRole !== editingUser.role ? 'WARNING' : 'INFO'
+          );
+        }
+        setIsAddModalOpen(false);
       });
-      onUpdateUsers(updated);
-
-      // If current logged-in user was edited, sync
-      if (currentUser.id === editingUser.id) {
-        const currentUpdated = updated.find((u) => u.id === editingUser.id);
-        if (currentUpdated) onSelectCurrentUser(currentUpdated);
-      }
-    } else {
-      // Add new
-      const newUser: SystemUser = {
-        id: `user-${Date.now()}`,
-        staffNumber: formStaffNumber,
-        name: formName,
-        email: formEmail,
-        role: formRole,
-        department: formDepartment,
-        base: formBase,
-        status: formStatus,
-        avatarInitials: initials,
-        lastLogin: 'Just now',
-        permissions: formPermissions,
-      };
-      onUpdateUsers([...users, newUser]);
+      return;
     }
 
-    setIsAddModalOpen(false);
+    // New account: real login with a temporary password + profile + welcome email
+    await runAccountAction(async () => {
+      const result = await addAccount(
+        {
+          name: formName,
+          email: formEmail,
+          staffNumber: formStaffNumber,
+          role: formRole,
+          department: formDepartment,
+          base: formBase,
+          permissions: formPermissions,
+        },
+        currentUser.email || currentUser.name
+      );
+      setCreatedResult({ ...result, email: formEmail.trim().toLowerCase(), name: formName });
+      notify(
+        `Created ${formName}'s login.`,
+        'User Account Created',
+        `${currentUser.name} created ${formEmail} with role ${formRole}.`,
+        'WARNING'
+      );
+    });
   };
 
-  const handleToggleUserStatus = (userToToggle: SystemUser) => {
-    const newStatus = userToToggle.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    const updated = users.map((u) => (u.id === userToToggle.id ? { ...u, status: newStatus } : u));
-    onUpdateUsers(updated);
+  const handleBlockToggle = async (target: AccountRow) => {
+    const block = target.status === 'ACTIVE';
+    await runAccountAction(async () => {
+      if (block && needsConfirmation(target)) {
+        await requestSuperAdminAction(target, 'block', undefined, { uid: currentUser.id, email: currentUser.email });
+        setAccountInfo(`Request sent. ${target.name} must approve being blocked.`);
+        notify(`Request sent to ${target.name}.`, 'Super Admin Change Requested', `${currentUser.name} asked ${target.email} to approve being blocked.`, 'WARNING');
+        return;
+      }
+      await setAccountBlocked(target, block);
+      setFormStatus(block ? 'INACTIVE' : 'ACTIVE');
+      setEditingUser({ ...target, status: block ? 'INACTIVE' : 'ACTIVE' });
+      notify(
+        block ? `${target.name} is blocked.` : `${target.name} is unblocked.`,
+        block ? 'User Blocked' : 'User Unblocked',
+        `${currentUser.name} ${block ? 'blocked' : 'unblocked'} ${target.email}.`,
+        'WARNING'
+      );
+    });
+  };
+
+  const handleTwoFactor = async (target: AccountRow, mode: 'on' | 'off') => {
+    await runAccountAction(async () => {
+      await setAccountTwoFactor(target, mode);
+      setEditingUser({ ...(target as SystemUser), twoFactor: mode } as SystemUser);
+      setAccountInfo(
+        mode === 'on'
+          ? `${target.name} must set up an authenticator app at their next sign-in (straight away if signed in now).`
+          : `${target.name} will sign in with just their password. If they had an authenticator app, it is asked once more and then removed.`
+      );
+      notify(
+        mode === 'on' ? `2FA started for ${target.name}.` : `2FA stopped for ${target.name}.`,
+        mode === 'on' ? '2FA Started For User' : '2FA Stopped For User',
+        `${currentUser.name} ${mode === 'on' ? 'required' : 'switched off'} two-step sign-in for ${target.email}.`,
+        'WARNING'
+      );
+    });
+  };
+
+  const handleWithdrawRequest = async (target: AccountRow) => {
+    await runAccountAction(async () => {
+      await cancelSuperAdminAction(target);
+      setEditingUser({ ...(target as SystemUser), pendingAction: undefined } as SystemUser);
+      setAccountInfo('Request withdrawn.');
+    });
+  };
+
+  const handleRequire2faAll = async () => {
+    setSecurityMsg(null);
+    try {
+      await enableRequire2fa(currentUser.email);
+      setRequire2faAll(true);
+      notify('2FA is now required for everyone.', '2FA Required For Everyone', `${currentUser.name} required two-step sign-in for all users.`, 'CRITICAL');
+    } catch (e) {
+      setSecurityMsg((e as Error).message);
+    }
   };
 
   return (
@@ -336,7 +505,7 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
 
         <button
           onClick={handleOpenAddModal}
-          disabled={!currentUser.permissions.canManageUsers}
+          disabled={!iManageUsers}
           className="px-4 py-2 bg-[#F37C1C] hover:bg-[#D96B12] disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shadow-xs shrink-0"
         >
           <UserPlus className="w-4 h-4" />
@@ -345,13 +514,13 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
       </div>
 
       {/* Permission Warning Banner if non-Admin */}
-      {!currentUser.permissions.canManageUsers && (
+      {!iManageUsers && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-medium flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0" />
             <span>
               You are currently logged in as <strong>{currentUser.name}</strong> ({ROLE_BADGES[currentUser.role].label}).
-              User management actions are restricted to Administrators. You may switch active user in the top menu to test Admin capabilities.
+              User management actions are restricted to System Admins and Super Admins.
             </span>
           </div>
         </div>
@@ -385,6 +554,44 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Two-step sign-in for everyone (Super Admins) */}
+      {isSuperAdmin && (
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#2E2C2B] text-[#F37C1C] flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                Two-Step Sign-In (2FA) for Everyone
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                    require2faAll ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  {require2faAll ? 'REQUIRED' : 'NOT REQUIRED'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5 max-w-2xl">
+                {require2faAll
+                  ? 'Every user must sign in with an authenticator-app code. Exceptions can be made per person (edit the user).'
+                  : 'Turn this on after you have set up 2FA on your own account and signed in with your code. Per-person 2FA can be started from each user.'}
+              </p>
+              {securityMsg && <p className="text-[11px] text-red-700 mt-1">{securityMsg}</p>}
+            </div>
+          </div>
+          {!require2faAll && (
+            <button
+              onClick={handleRequire2faAll}
+              className="px-4 py-2 bg-[#2E2C2B] hover:bg-black text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-2 shrink-0"
+            >
+              <Lock className="w-3.5 h-3.5 text-[#F37C1C]" />
+              <span>Require 2FA for Everyone</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Active User Quick Switch Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -543,10 +750,28 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                         }`}>
                           {u.status}
                         </span>
-                        <span className="text-[9px] text-slate-500 font-mono flex items-center gap-1">
-                          <Lock className="w-3 h-3 text-[#F37C1C]" />
-                          <span>Protected</span>
-                        </span>
+                        {(() => {
+                          const tf = twoFactorBadge(u as AccountRow);
+                          return (
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${tf.cls}`}>
+                              <Lock className="w-3 h-3 text-[#F37C1C]" />
+                              <span>{tf.label}</span>
+                            </span>
+                          );
+                        })()}
+                        {lockOf(u)?.locked && (
+                          <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-red-100 text-red-800">
+                            LOCKED (5 WRONG PASSWORDS)
+                          </span>
+                        )}
+                        {!lockOf(u)?.locked && (lockOf(u)?.failures || 0) > 0 && (
+                          <span className="text-[9px] text-amber-700 font-mono">{lockOf(u)?.failures} wrong password(s)</span>
+                        )}
+                        {(u as AccountRow).pendingAction && (
+                          <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-100 text-amber-800">
+                            AWAITING THEIR APPROVAL
+                          </span>
+                        )}
                       </div>
                     </td>
 
@@ -571,7 +796,7 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
 
                         <button
                           onClick={() => handleOpenEditModal(u)}
-                          disabled={!currentUser.permissions.canManageUsers && !isSelectedCurrent}
+                          disabled={!canManageAccount(currentUser, u) && !isSelectedCurrent}
                           title="Edit User Name, Role, Permissions & Password"
                           className="p-1.5 text-slate-500 hover:text-[#F37C1C] hover:bg-orange-50 rounded transition-colors cursor-pointer disabled:opacity-30"
                         >
@@ -579,8 +804,11 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                         </button>
 
                         <button
-                          onClick={() => setDeletingUserConfirm(u)}
-                          disabled={!currentUser.permissions.canManageUsers || isSelectedCurrent || users.length <= 1}
+                          onClick={() => {
+                setAccountError(null);
+                setDeletingUserConfirm(u);
+              }}
+                          disabled={!canManageAccount(currentUser, u) || users.length <= 1}
                           title={
                             isSelectedCurrent
                               ? 'Cannot delete active session user'
@@ -719,6 +947,56 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
               </button>
             </div>
 
+            {createdResult ? (
+              <div className="space-y-4 text-xs">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                  <span>
+                    <strong>{createdResult.name}</strong>'s login ({createdResult.email}) has been created.{' '}
+                    {createdResult.emailVia === 'outlook'
+                      ? 'Their login details were emailed from the company mailbox.'
+                      : createdResult.emailVia === 'firebase'
+                        ? 'Firebase emailed them a link to set their own password.'
+                        : 'No email could be sent — give them the temporary password below in person.'}
+                  </span>
+                </div>
+                {createdResult.emailError && createdResult.emailVia !== 'outlook' && (
+                  <p className="text-[11px] text-amber-700">Company mailbox not used: {createdResult.emailError}</p>
+                )}
+                <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
+                  <p className="text-[11px] text-slate-400">Temporary password (shown once — only share it with {createdResult.name}):</p>
+                  <div className="relative">
+                    <pre className="text-sm text-emerald-400 font-mono bg-black/40 rounded-md p-2.5 pr-9">{createdResult.tempPassword}</pre>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(createdResult.tempPassword);
+                        setCopiedTemp(true);
+                        setTimeout(() => setCopiedTemp(false), 2000);
+                      }}
+                      className="absolute top-2 right-2 p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      title="Copy"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {copiedTemp && <p className="text-[10px] text-emerald-400">Copied.</p>}
+                  <p className="text-[10px] text-slate-500">They must choose their own password when they first sign in.</p>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreatedResult(null);
+                      setIsAddModalOpen(false);
+                    }}
+                    className="px-5 py-2 bg-[#F37C1C] hover:bg-[#D96B12] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
             <form onSubmit={handleSaveUser} className="space-y-4 text-xs font-semibold">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -740,8 +1018,10 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                     required
                     value={formEmail}
                     onChange={(e) => setFormEmail(e.target.value)}
+                    readOnly={!!editingUser}
+                    title={editingUser ? 'The sign-in email of an existing login cannot be changed here' : undefined}
                     placeholder="e.g. m.tembo@zambiaairways.co.zm"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C] read-only:bg-slate-100"
                   />
                 </div>
 
@@ -778,43 +1058,137 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                           Could not send reset email. Check the address is correct and try again.
                         </p>
                       )}
+                      {lockOf(editingUser)?.locked && (
+                        <p className="text-[10px] text-red-700 font-sans normal-case font-bold">
+                          This account is LOCKED after 5 wrong passwords. Sending the reset email also unlocks it.
+                        </p>
+                      )}
+                      {(editingUser as AccountRow).mustChangePassword && (
+                        <p className="text-[10px] text-amber-700 font-sans normal-case">
+                          Still using the temporary password from their welcome email.
+                        </p>
+                      )}
+
+                      {/* Account access & two-step sign-in */}
+                      {editingUser.id !== currentUser.id && canManageAccount(currentUser, editingUser) && (
+                        <div className="pt-2 mt-1 border-t border-slate-200 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {(() => {
+                              const tf = twoFactorBadge(editingUser as AccountRow);
+                              return <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${tf.cls}`}>{tf.label}</span>;
+                            })()}
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                editingUser.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                              }`}
+                            >
+                              {editingUser.status === 'ACTIVE' ? 'ACCESS ACTIVE' : 'BLOCKED'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              disabled={accountBusy || !!(editingUser as AccountRow).pendingAction}
+                              onClick={() => handleBlockToggle(editingUser as AccountRow)}
+                              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                            >
+                              {editingUser.status === 'ACTIVE' ? <Lock className="w-3.5 h-3.5 text-red-600" /> : <Unlock className="w-3.5 h-3.5 text-emerald-600" />}
+                              <span>
+                                {editingUser.status === 'ACTIVE'
+                                  ? needsConfirmation(editingUser)
+                                    ? 'Request Block'
+                                    : 'Block Access'
+                                  : 'Unblock Access'}
+                              </span>
+                            </button>
+
+                            {isSuperAdmin && (
+                              <button
+                                type="button"
+                                disabled={accountBusy}
+                                onClick={() =>
+                                  handleTwoFactor(
+                                    editingUser as AccountRow,
+                                    (editingUser as AccountRow).twoFactor === 'on' ||
+                                      (require2faAll && (editingUser as AccountRow).twoFactor !== 'off') ||
+                                      (editingUser as AccountRow).twoFactorEnrolled
+                                      ? 'off'
+                                      : 'on'
+                                  )
+                                }
+                                className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                <ShieldCheck className="w-3.5 h-3.5 text-[#F37C1C]" />
+                                <span>
+                                  {(editingUser as AccountRow).twoFactor === 'on' ||
+                                  (require2faAll && (editingUser as AccountRow).twoFactor !== 'off') ||
+                                  (editingUser as AccountRow).twoFactorEnrolled
+                                    ? 'Stop 2FA'
+                                    : 'Start 2FA'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+
+                          {isSuperAdmin && (editingUser as AccountRow).twoFactorEnrolled && (
+                            <div className="space-y-1">
+                              <p className="text-[10px] text-slate-500 font-sans normal-case font-normal">
+                                Lost or replaced phone? The project owner runs this in the project folder, then the user sets
+                                2FA up again at next sign-in:
+                              </p>
+                              <div className="relative">
+                                <pre className="text-[10px] text-emerald-400 font-mono whitespace-pre-wrap break-all bg-slate-900 rounded-md p-2 pr-8">
+                                  {reset2faCommand(editingUser.email)}
+                                </pre>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(reset2faCommand(editingUser.email));
+                                    setCopiedCommand(true);
+                                    setTimeout(() => setCopiedCommand(false), 2000);
+                                  }}
+                                  className="absolute top-1.5 right-1.5 p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                                  title="Copy command"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                              {copiedCommand && <p className="text-[10px] text-emerald-600 font-sans normal-case">Copied.</p>}
+                            </div>
+                          )}
+
+                          {(editingUser as AccountRow).pendingAction && (
+                            <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-900 font-sans normal-case font-normal flex items-center justify-between gap-2">
+                              <span>
+                                Waiting for {editingUser.name} to approve: {describePendingAction((editingUser as AccountRow).pendingAction!)} (asked by{' '}
+                                {(editingUser as AccountRow).pendingAction!.requestedByEmail}).
+                              </span>
+                              {(editingUser as AccountRow).pendingAction!.requestedBy === currentUser.id && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleWithdrawRequest(editingUser as AccountRow)}
+                                  className="px-2 py-1 bg-white border border-amber-300 rounded font-bold shrink-0"
+                                >
+                                  Withdraw
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
                       <p className="text-[11px] text-slate-400 font-sans normal-case font-normal leading-relaxed">
-                        This form only saves {formName || "this person"}'s directory profile (name, role, department).
-                        It does <strong className="text-slate-300">not</strong> create their actual login. To let them
-                        sign in, run this command in your terminal (choose a real temporary password, then have them
-                        change it on first login):
+                        Creating the account also creates {formName || 'this person'}'s <strong className="text-slate-300">login</strong>{' '}
+                        with a random temporary password. It is emailed to them from the company mailbox (Power Automate
+                        gateway) or, if that isn't set up, Firebase emails them a link to set their own password. They must
+                        choose their own password at first sign-in.
                       </p>
-                      <div className="relative">
-                        <pre className="text-[10px] text-emerald-400 font-mono whitespace-pre-wrap break-all bg-black/40 rounded-md p-2.5 pr-9">
-{`node scripts/create-user.mjs \\
-  --email=${formEmail || 'person@zambiaairways.co.zm'} \\
-  --password=CHANGE_ME_TEMP_PASS \\
-  --name="${formName || 'Full Name'}" \\
-  --role=${formRole} \\
-  --department="${formDepartment}" \\
-  --staffNumber=${formStaffNumber || 'ZA-XXX'}`}
-                        </pre>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const cmd = `node scripts/create-user.mjs --email=${formEmail || 'person@zambiaairways.co.zm'} --password=CHANGE_ME_TEMP_PASS --name="${formName || 'Full Name'}" --role=${formRole} --department="${formDepartment}" --staffNumber=${formStaffNumber || 'ZA-XXX'}`;
-                            navigator.clipboard.writeText(cmd);
-                            setCopiedCommand(true);
-                            setTimeout(() => setCopiedCommand(false), 2000);
-                          }}
-                          className="absolute top-2 right-2 p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
-                          title="Copy command"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      {copiedCommand && <p className="text-[10px] text-emerald-400 font-sans normal-case">Copied to clipboard.</p>}
                       <p className="text-[10px] text-slate-500 font-sans normal-case font-normal">
-                        Add <code className="text-slate-400">--emulator</code> to target your local test environment
-                        instead of live production.
+                        Two-step sign-in (2FA) follows the "2FA for everyone" setting; you can start it for one person after
+                        creating the account.
                       </p>
                     </div>
                   )}
@@ -827,6 +1201,7 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                     required
                     value={formStaffNumber}
                     onChange={(e) => setFormStaffNumber(e.target.value)}
+                    readOnly={!!editingUser && editingUser.id === currentUser.id}
                     placeholder="e.g. ZA-ADM-001"
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
                   />
@@ -837,14 +1212,20 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                   <select
                     value={formRole}
                     onChange={(e) => handleRoleChange(e.target.value as SystemUserRole)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                    disabled={!!editingUser && (editingUser.id === currentUser.id || !canManageAccount(currentUser, editingUser))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C] disabled:bg-slate-100"
                   >
-                    <option value="SUPER_ADMIN">Super Admin / IT (System Configuration & Security)</option>
-                    <option value="SCHEDULER">Crew Scheduler / Dispatcher (Full Roster Read/Write)</option>
-                    <option value="CHIEF_PILOT">Line Management / Chief Pilot (Department Read-Only & Approvals)</option>
-                    <option value="FLIGHT_CREW">Flight Crew (Restricted Individual Self-Service)</option>
-                    <option value="AUDITOR">Safety Auditor / Inspector (Read-Only Compliance & History)</option>
+                    {Array.from(new Set<SystemUserRole>([...(editingUser ? [editingUser.role] : []), ...assignableRoles(currentUser.role)])).map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_OPTION_TEXT[r]}
+                      </option>
+                    ))}
                   </select>
+                  {editingUser && needsConfirmation(editingUser) && editingUser.id !== currentUser.id && (
+                    <p className="text-[10px] text-amber-700 mt-1 font-normal">
+                      Changing a Super Admin's role is sent to them for approval.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -940,8 +1321,15 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                 </div>
               </div>
 
+              {accountError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-800 font-normal">{accountError}</div>
+              )}
+              {accountInfo && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-[11px] text-emerald-800 font-normal">{accountInfo}</div>
+              )}
+
               <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-                {editingUser && editingUser.id !== currentUser.id && users.length > 1 ? (
+                {editingUser && editingUser.id !== currentUser.id && canManageAccount(currentUser, editingUser) && users.length > 1 ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -967,13 +1355,15 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2 bg-[#F37C1C] hover:bg-[#D96B12] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+                    disabled={accountBusy}
+                    className="px-5 py-2 bg-[#F37C1C] hover:bg-[#D96B12] disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
                   >
-                    {editingUser ? 'Save User Changes' : 'Create System Account'}
+                    {accountBusy ? 'Saving…' : editingUser ? 'Save User Changes' : 'Create System Account'}
                   </button>
                 </div>
               </div>
             </form>
+            )}
           </div>
         </div>
       )}
@@ -997,8 +1387,11 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
             </p>
 
             <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-[11px] text-red-800">
-              ⚠️ This user will no longer be able to log in or access Zambia Airways Crew Control System.
+              {needsConfirmation(deletingUserConfirm)
+                ? '⚠️ This is a Super Admin: they will be asked to approve the removal before it happens.'
+                : '⚠️ This user will no longer be able to access Zambia Airways Crew Control System. (Their Firebase login stays, without access; it can be deleted in the Firebase console.)'}
             </div>
+            {accountError && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-800">{accountError}</div>}
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
@@ -1010,19 +1403,25 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (onDeleteUser) {
-                    onDeleteUser(deletingUserConfirm.id);
-                  } else {
-                    const updated = users.filter((u) => u.id !== deletingUserConfirm.id);
-                    onUpdateUsers(updated);
-                  }
-                  setDeletingUserConfirm(null);
+                disabled={accountBusy}
+                onClick={async () => {
+                  const target = deletingUserConfirm;
+                  await runAccountAction(async () => {
+                    if (needsConfirmation(target)) {
+                      await requestSuperAdminAction(target, 'remove', undefined, { uid: currentUser.id, email: currentUser.email });
+                      notify(`Request sent: ${target.name} must approve their removal.`, 'Super Admin Change Requested', `${currentUser.name} asked ${target.email} to approve removing their account.`, 'WARNING');
+                    } else {
+                      await removeAccount(target);
+                      onDeleteUser?.(target.id);
+                      notify(`Removed ${target.name}'s access.`, 'User Access Removed', `${currentUser.name} removed ${target.email}'s access.`, 'CRITICAL');
+                    }
+                    setDeletingUserConfirm(null);
+                  });
                 }}
                 className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Confirm Delete Account</span>
+                <span>{needsConfirmation(deletingUserConfirm) ? 'Send Removal Request' : 'Confirm Delete Account'}</span>
               </button>
             </div>
           </div>
