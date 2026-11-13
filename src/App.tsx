@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet, AuditLog } from './types';
+import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet } from './types';
+import { logAudit, type AuditArea } from './utils/auditTrail';
 import { currentPeriod } from './utils/dates';
 import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
@@ -20,9 +21,6 @@ import {
   saveUsers,
   loadCurrentUser,
   saveCurrentUser,
-  loadAuditLogs,
-  addAuditEntry,
-  saveAuditLogs,
   exportSystemBackupJSON,
   importSystemBackupJSON,
 } from './utils/storage';
@@ -33,6 +31,7 @@ import { initOfflineSyncService, cacheCriticalRoster } from './utils/offlineSync
 import {
   onAuthChange,
   signOutUser,
+  takeFreshSignIn,
   changeOwnPassword,
   verifyUserAccess,
   subscribeMyUserRecord,
@@ -150,6 +149,17 @@ function buildCurrentUserFromAccess(fbUser: FirebaseUser, access: UserAccess): S
   };
 }
 
+/** Audit area for the summary actions logged by screens. */
+function areaForAction(action: string): AuditArea {
+  const a = action.toLowerCase();
+  if (/sign|login|logout/.test(a)) return 'sign-in';
+  if (/password|2fa|two-step/.test(a)) return 'security';
+  if (/user|session|account/.test(a)) return 'users';
+  if (/export|pack|download|print/.test(a)) return 'exports';
+  if (/notif|gateway|queue|dispatch|broadcast|alert|message/.test(a)) return 'notifications';
+  return 'system';
+}
+
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>('dashboard');
 
@@ -164,7 +174,6 @@ export function App() {
   const [leaveRecords, setLeaveRecordsState] = useState<LeaveTrainingRecord[]>([]);
   const [fleet, setFleetState] = useState<AircraftFleet[]>([]);
   const [rules, setRulesState] = useState<LegalityRules>(getRules());
-  const [auditLogs, setAuditLogsState] = useState<AuditLog[]>([]);
 
     // System Users State (directory/profile metadata only — no passwords;
   // credentials live in Firebase Auth).
@@ -200,7 +209,7 @@ export function App() {
   const endSession = async (message?: string) => {
     if (message) setLoginNoticeState(message);
     clearActivity();
-    await signOutUser().catch((err) => console.error('[App] Sign-out failed:', err));
+    await signOutUser(message ? `Signed out: ${message}` : 'Signed out').catch((err) => console.error('[App] Sign-out failed:', err));
   };
 
   // Firebase Auth session listener — the actual security gate. Runs once
@@ -265,7 +274,9 @@ export function App() {
         setMyPendingAction(access.pendingAction);
         setLoginNoticeState(null);
         setIsLoggedOut(false);
-        logAction('User Login', `${resolvedUser.name} (${resolvedUser.role}) signed in${usedCode ? ' with 2FA' : ''}.`);
+        if (takeFreshSignIn()) {
+          logAction('Signed in', `${resolvedUser.name} (${resolvedUser.role}) signed in${usedCode ? ' with password and authenticator code (2FA)' : ' with password'}.`, 'INFO', 'sign-in');
+        }
         showToast(`Welcome back, ${resolvedUser.name}!`);
       } catch (err) {
         console.error('[App] Failed to resolve signed-in user profile:', err);
@@ -323,11 +334,6 @@ export function App() {
     setAnsweringPending(true);
     try {
       await answerMyPendingAction(myPendingAction, approve);
-      logAction(
-        approve ? 'Super Admin Request Approved' : 'Super Admin Request Declined',
-        `${currentUser.name} ${approve ? 'approved' : 'declined'} ${myPendingAction.requestedByEmail}'s request to ${what}.`,
-        'WARNING'
-      );
     } catch (e) {
       showToast((e as Error).message);
     } finally {
@@ -345,15 +351,15 @@ export function App() {
     }, 4000);
   };
 
-  const logAction = (action: string, details: string, severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO') => {
-    const updatedLogs = addAuditEntry({
-      user: currentUser?.name || 'System User',
-      userRole: currentUser?.role || 'ADMIN',
-      action,
-      details,
-      severity,
-    });
-    setAuditLogsState(updatedLogs);
+  // Audit trail (docs/AUDIT_TRAIL.md): server time, person, role and device are
+  // added by logAudit; data changes themselves are logged by the sync layer.
+  const logAction = (
+    action: string,
+    details: string,
+    severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO',
+    area: AuditArea = areaForAction(action)
+  ) => {
+    void logAudit({ area, action, details, severity });
   };
 
   // Cloud Sync State
@@ -367,7 +373,6 @@ export function App() {
     const initialAssignments = getAssignments();
     const initialLeave = getLeaveRecords();
     const initialRules = getRules();
-    const initialAudit = loadAuditLogs();
     const initialUsers = loadUsers();
     const initialCurrentUser = loadCurrentUser();
 
@@ -377,7 +382,6 @@ export function App() {
     setLeaveRecordsState(initialLeave);
     setFleetState(initialFleet);
     setRulesState(initialRules);
-    setAuditLogsState(initialAudit);
     setSystemUsers(initialUsers);
     setCurrentUser(initialCurrentUser);
 
@@ -441,12 +445,6 @@ export function App() {
         if (Array.isArray(items) && items.length > 0) {
           setSystemUsers(items);
           localStorage.setItem('zambia_airways_users', JSON.stringify(items));
-        }
-      },
-      onAuditLogsUpdate: (items) => {
-        if (Array.isArray(items)) {
-          setAuditLogsState(items);
-          localStorage.setItem('zambia_airways_audit', JSON.stringify(items));
         }
       },
       // Roster acknowledgements from crew devices (previously never loaded,
@@ -538,7 +536,6 @@ export function App() {
 
   const handleLogout = () => {
     handleSaveAllSystemData();
-    logAction('User Logout & App Locked', `${currentUser.name} (${currentUser.role}) logged out. System data auto-saved.`);
     showToast('Application saved and logged out safely!');
     // Give the debounced Firestore writes just queued above (up to 600ms)
     // time to actually reach the server before the session token is
@@ -552,7 +549,7 @@ export function App() {
   const handleChangePassword = async (currentPassword: string, newPassword: string) => {
     try {
       await changeOwnPassword(currentPassword, newPassword);
-      logAction('Password Changed', `${currentUser.name} updated their account password.`);
+      logAction('Password changed', `${currentUser.name} changed their own password.`, 'INFO', 'security');
       showToast('Your account password has been successfully updated!');
     } catch (err: unknown) {
       showToast((err as Error)?.message || 'Could not update password. Please try again.');
@@ -965,7 +962,8 @@ export function App() {
               onUpdateUsers={handleUpdateUsers}
               onDeleteUser={(userId) => setSystemUsers((list) => list.filter((u) => u.id !== userId))}
               onAccountAction={(message, audit) => {
-                if (audit) logAction(audit.action, audit.details, audit.severity || 'INFO');
+                // The change itself is logged with before/after values by utils/accounts.ts
+                void audit;
                 showToast(message);
               }}
             />
@@ -1172,12 +1170,10 @@ export function App() {
 
           {activeView === 'audit' && (
             <AuditLogView
-              auditLogs={auditLogs}
-              onClearLogs={() => {
-                saveAuditLogs([]);
-                setAuditLogsState([]);
-                showToast('Cleared audit log history.');
-              }}
+              currentUser={{ name: currentUser.name, email: currentUser.email, role: signedInRole || currentUser.role }}
+              crew={crew}
+              flights={flights}
+              fleet={fleet}
             />
           )}
 
@@ -1251,7 +1247,7 @@ export function App() {
         onEnrolled={() => {
           setIsTwoFactorOpen(false);
           setLoginNotice('Two-step sign-in is on. Sign in with your password and the code from your app.', currentUser.email);
-          logAction('2FA Enabled', `${currentUser.name} set up authenticator-app two-step sign-in.`);
+          logAction('Set up 2FA', `${currentUser.name} set up authenticator-app two-step sign-in.`, 'INFO', 'security');
           endSession();
         }}
       />

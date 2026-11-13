@@ -43,10 +43,22 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { getAuditActor, logAudit, logSignInFailure, setAuditActor } from './auditTrail';
 import { app, db, isDev, useEmulator } from './firebaseSync';
 import type { SystemUser, SystemUserRole } from '../types';
 
 export const auth = getAuth(app);
+
+/** Email of the sign-in in progress (for logging a wrong authenticator code). */
+let signInEmailInProgress = '';
+/** Set when a password (+ code) sign-in just succeeded, so a page reload isn't logged as a sign-in. */
+let freshSignIn = false;
+
+export function takeFreshSignIn(): boolean {
+  const was = freshSignIn;
+  freshSignIn = false;
+  return was;
+}
 
 if (useEmulator) {
   try {
@@ -180,10 +192,15 @@ export async function signIn(email: string, password: string): Promise<SignInRes
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail || !password) return { user: null, error: 'Enter both your email and password.' };
   await persistenceReady;
-  if ((await getSignInLock(cleanEmail))?.locked) return { user: null, error: LOCKED_MESSAGE };
+  signInEmailInProgress = cleanEmail;
+  if ((await getSignInLock(cleanEmail))?.locked) {
+    void logSignInFailure('Sign-in refused', cleanEmail, 'Attempt on a locked account (locked after 5 wrong passwords).');
+    return { user: null, error: LOCKED_MESSAGE };
+  }
   pendingSignInPassword = { password, at: Date.now() };
   try {
     const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    freshSignIn = true;
     return { user: cred.user };
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code || '';
@@ -193,7 +210,15 @@ export async function signIn(email: string, password: string): Promise<SignInRes
     pendingSignInPassword = null;
     if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
       const lock = await recordFailedSignIn(cleanEmail);
-      if (lock?.locked) return { user: null, error: LOCKED_MESSAGE };
+      if (lock?.locked) {
+        void logSignInFailure('Account locked', cleanEmail, `Wrong password; account locked after ${MAX_SIGNIN_ATTEMPTS} wrong passwords.`);
+        return { user: null, error: LOCKED_MESSAGE };
+      }
+      void logSignInFailure(
+        'Sign-in failed',
+        cleanEmail,
+        lock ? `Wrong email or password (${lock.failures} of ${MAX_SIGNIN_ATTEMPTS} before lock-out).` : 'Wrong email or password.'
+      );
       const left = lock ? MAX_SIGNIN_ATTEMPTS - lock.failures : null;
       return {
         user: null,
@@ -220,10 +245,12 @@ export async function completeMfaSignIn(resolver: MultiFactorResolver, code: str
   try {
     const assertion = TotpMultiFactorGenerator.assertionForSignIn(hint.uid, code.replace(/\s/g, ''));
     const cred = await resolver.resolveSignIn(assertion);
+    freshSignIn = true;
     return { user: cred.user };
   } catch (err: unknown) {
     const c = (err as { code?: string })?.code || '';
     if (c === 'auth/invalid-verification-code' || c === 'auth/totp-challenge-timeout') {
+      void logSignInFailure('Authenticator code rejected', signInEmailInProgress, 'Wrong or expired 6-digit authenticator code.');
       return { user: null, error: 'That code is not right or has expired. Enter the current 6-digit code from your app.' };
     }
     if (c === 'auth/too-many-requests') return { user: null, error: 'Too many attempts. Wait a few minutes and try again.' };
@@ -231,7 +258,9 @@ export async function completeMfaSignIn(resolver: MultiFactorResolver, code: str
   }
 }
 
-export async function signOutUser(): Promise<void> {
+export async function signOutUser(reason = 'Signed out'): Promise<void> {
+  if (getAuditActor()) await logAudit({ area: 'sign-in', action: 'Signed out', details: reason });
+  setAuditActor(null);
   await signOut(auth);
 }
 
@@ -302,7 +331,12 @@ const VALID_ROLES: SystemUserRole[] = [
 export const BLOCKED_MESSAGE = 'Your account has been blocked. Contact a System Admin if you think this is a mistake.';
 
 export async function verifyUserAccess(user: User): Promise<UserAccess> {
-  const denied = (deniedReason: string): UserAccess => ({
+  const denied = (deniedReason: string): UserAccess => {
+    setAuditActor(null);
+    void logSignInFailure('Sign-in refused', user.email || '', deniedReason);
+    return deniedAccess(deniedReason);
+  };
+  const deniedAccess = (deniedReason: string): UserAccess => ({
     allowed: false,
     deniedReason,
     role: null,
@@ -365,6 +399,8 @@ export async function verifyUserAccess(user: User): Promise<UserAccess> {
   const profile = { ...data } as Partial<SystemUser> & Record<string, unknown>;
   delete profile.password;
   delete profile.tempPasswordHash;
+
+  setAuditActor({ uid: user.uid, email: user.email || '', name: String(data.name || user.displayName || ''), role });
 
   return {
     allowed: true,

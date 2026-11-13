@@ -373,6 +373,7 @@ export function saveAuditLogs(logs: AuditLog[]) {
   syncAuditLogsToFirebase(logs);
 }
 
+/** @deprecated Local-only legacy log. Use logAudit() from auditTrail.ts. */
 export function addAuditEntry(entry: Partial<AuditLog> & { user: string }) {
   const logs = loadAuditLogs();
   const now = new Date();
@@ -636,15 +637,7 @@ export function recordCrewAcknowledgment(
 
   saveAcknowledgments(updatedAcks);
 
-  // Also log audit event
-  addAuditEntry({
-    user: `${crewName} (${staffNumber})`,
-    userRole: 'PILOT_CABIN',
-    action: 'Roster Acknowledgment',
-    details: `Crew ${crewName} (${staffNumber}) acknowledged published roster for period ${rosterPeriod}.`,
-    severity: 'INFO',
-    crewName,
-  });
+  // Recorded in the audit trail automatically (acknowledgements are an audited collection).
 
   return newAck;
 }
