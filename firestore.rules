@@ -274,13 +274,18 @@ service cloud.firestore {
       // Own profile: last sign-in time, display details, whether they use an
       // authenticator app ("true" only from a session that used the code), and
       // clearing the temporary-password flag. Never role, status, email,
-      // staff number, permissions or the per-person 2FA setting.
+      // permissions or the per-person 2FA setting.
       allow update: if signedIn() && request.auth.uid == uid
         && userChanges().hasOnly(['lastLogin'])
         && request.resource.data.lastLogin is string;
+      // Staff (not crew logins, whose crew portal is matched on it) may also set
+      // their own staff number.
       allow update: if isActiveUser() && request.auth.uid == uid
-        && userChanges().hasOnly(['name', 'department', 'base', 'avatarInitials'])
-        && request.resource.data.name is string && request.resource.data.name.size() <= 200;
+        && userChanges().hasOnly(['name', 'department', 'base', 'avatarInitials', 'staffNumber'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 200
+        && (!userChanges().hasAny(['staffNumber'])
+          || (!(role() in ['FLIGHT_CREW', 'PILOT_CABIN'])
+            && request.resource.data.staffNumber is string && request.resource.data.staffNumber.size() <= 40));
       allow update: if signedIn() && request.auth.uid == uid
         && userChanges().hasOnly(['twoFactorEnrolled'])
         && request.resource.data.twoFactorEnrolled is bool

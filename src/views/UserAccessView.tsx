@@ -30,6 +30,12 @@ import {
   Trash2,
   Copy,
   Terminal,
+  ShieldOff,
+  Smartphone,
+  Ban,
+  CircleCheck,
+  Loader2,
+  LockOpen,
 } from 'lucide-react';
 
 import { PasswordModal } from '../components/PasswordModal';
@@ -191,6 +197,119 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
   const [formEmail, setFormEmail] = useState('');
   const [copiedCommand, setCopiedCommand] = useState(false);
   const [resetStatus, setResetStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
+  // ---- Row actions (same buttons as the QSA Reporting System) ----
+  const [busyRowId, setBusyRowId] = useState<string | null>(null);
+  const [listNotice, setListNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [resetFor, setResetFor] = useState<AccountRow | null>(null);
+  const [resetCopied, setResetCopied] = useState(false);
+
+  const twoFactorOn = (u: AccountRow) =>
+    u.twoFactorEnrolled === true || u.twoFactor === 'on' || (require2faAll && u.twoFactor !== 'off');
+
+  const runRowAction = async (u: SystemUser, fn: () => Promise<void>) => {
+    setBusyRowId(u.id);
+    setListNotice(null);
+    try {
+      await fn();
+    } catch (e) {
+      setListNotice({ kind: 'error', text: (e as Error).message });
+    } finally {
+      setBusyRowId(null);
+    }
+  };
+
+  const rowSendReset = (u: SystemUser) => {
+    const locked = lockOf(u)?.locked;
+    if (
+      !window.confirm(
+        locked
+          ? `Unlock ${u.name} and email ${u.email} a link to set a new password?`
+          : `Email ${u.email} a link to set a new password?`
+      )
+    )
+      return;
+    runRowAction(u, async () => {
+      const wasLocked = await sendAccountPasswordReset(u.email);
+      if (wasLocked) {
+        setLocks((l) => {
+          const next = { ...l };
+          delete next[u.email.toLowerCase()];
+          return next;
+        });
+      }
+      setListNotice({
+        kind: 'ok',
+        text: wasLocked
+          ? `${u.name} is unlocked and a password reset email was sent to ${u.email}. It comes from Firebase and may land in spam.`
+          : `Password reset email sent to ${u.email}. It comes from Firebase and may land in spam.`,
+      });
+      notify(
+        wasLocked ? `Unlocked ${u.name}.` : `Reset email sent to ${u.email}.`,
+        wasLocked ? 'Account Unlocked' : 'Password Reset Sent',
+        `${currentUser.name} ${wasLocked ? 'unlocked and ' : ''}sent a password reset email to ${u.email}.`
+      );
+    });
+  };
+
+  const rowTwoFactor = (u: AccountRow) => {
+    const mode: 'on' | 'off' = twoFactorOn(u) ? 'off' : 'on';
+    if (
+      !window.confirm(
+        mode === 'off'
+          ? `Stop 2FA for ${u.name}?\n\nThey will sign in with just their password. If they already use an authenticator app, it is asked for one last time at their next sign-in and then removed.\n\nIf their phone is lost they can't give that last code: use "Reset 2FA" instead.`
+          : `Start 2FA for ${u.name}?\n\nThey will be asked to set up an authenticator app (Google or Microsoft Authenticator) straight away, or at their next sign-in, and then enter its code every time they sign in.`
+      )
+    )
+      return;
+    runRowAction(u, async () => {
+      await setAccountTwoFactor(u, mode);
+      setListNotice({
+        kind: 'ok',
+        text:
+          mode === 'off'
+            ? `2FA stopped for ${u.name}. Only their account is affected.`
+            : `2FA started for ${u.name}. They set up their authenticator app at their next sign-in.`,
+      });
+      notify(
+        mode === 'on' ? `2FA started for ${u.name}.` : `2FA stopped for ${u.name}.`,
+        mode === 'on' ? '2FA Started For User' : '2FA Stopped For User',
+        `${currentUser.name} ${mode === 'on' ? 'required' : 'switched off'} two-step sign-in for ${u.email}.`,
+        'WARNING'
+      );
+    });
+  };
+
+  const rowBlock = (u: AccountRow) => {
+    const block = u.status === 'ACTIVE';
+    const superTarget = block && needsConfirmation(u);
+    if (
+      !window.confirm(
+        !block
+          ? `Unblock ${u.name}? They will be able to sign in again as ${ROLE_BADGES[u.role].label}.`
+          : superTarget
+            ? `${u.name} is a Super Admin. Send them a request to approve being blocked?`
+            : `Block ${u.name}? They are signed out immediately and can't sign in until unblocked.`
+      )
+    )
+      return;
+    runRowAction(u, async () => {
+      if (superTarget) {
+        await requestSuperAdminAction(u, 'block', undefined, { uid: currentUser.id, email: currentUser.email });
+        setListNotice({ kind: 'ok', text: `Request sent. ${u.name} must approve being blocked.` });
+        notify(`Request sent to ${u.name}.`, 'Super Admin Change Requested', `${currentUser.name} asked ${u.email} to approve being blocked.`, 'WARNING');
+        return;
+      }
+      await setAccountBlocked(u, block);
+      setListNotice({ kind: 'ok', text: block ? `${u.name} is blocked.` : `${u.name} is unblocked.` });
+      notify(
+        block ? `${u.name} is blocked.` : `${u.name} is unblocked.`,
+        block ? 'User Blocked' : 'User Unblocked',
+        `${currentUser.name} ${block ? 'blocked' : 'unblocked'} ${u.email}.`,
+        'WARNING'
+      );
+    });
+  };
 
   const handleSendPasswordReset = async () => {
     if (!editingUser) return;
@@ -367,7 +486,13 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
       await runAccountAction(async () => {
         if (isSelf) {
           // Own account: display details only (role/status/2FA are changed by another admin)
-          await updateOwnProfile(editingUser.id, { name: formName, department: formDepartment, base: formBase });
+          const isCrewLogin = editingUser.role === 'FLIGHT_CREW' || editingUser.role === 'PILOT_CABIN';
+          await updateOwnProfile(editingUser.id, {
+            name: formName,
+            department: formDepartment,
+            base: formBase,
+            ...(isCrewLogin ? {} : { staffNumber: formStaffNumber }),
+          });
           notify('Your profile was updated.', 'Profile Updated', `${currentUser.name} updated their own profile details.`);
           setIsAddModalOpen(false);
           return;
@@ -665,6 +790,57 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
         </div>
       </div>
 
+      {/* Result of the last row action */}
+      {listNotice && (
+        <div
+          className={`p-3 rounded-xl border text-xs flex items-start justify-between gap-3 ${
+            listNotice.kind === 'ok' ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-red-50 border-red-200 text-red-800'
+          }`}
+        >
+          <span>{listNotice.text}</span>
+          <button onClick={() => setListNotice(null)} className="font-bold opacity-60 hover:opacity-100 cursor-pointer">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Reset 2FA instructions (lost / new phone) */}
+      {resetFor && (
+        <div className="p-4 rounded-xl border border-slate-300 bg-white text-xs text-slate-700 space-y-2 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <strong className="flex items-center gap-1.5">
+              <ShieldOff className="w-4 h-4 text-slate-500" /> Reset 2FA for {resetFor.email}
+            </strong>
+            <button onClick={() => setResetFor(null)} className="text-slate-400 hover:text-slate-700 font-bold cursor-pointer">
+              Close
+            </button>
+          </div>
+          <p>
+            On the free Firebase plan the browser isn't allowed to remove someone else's authenticator, so this step is run
+            from a computer with the project code and the Firebase CLI, signed in with the Google account that owns the
+            Firebase project. In the project folder, run:
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <code className="px-2.5 py-1.5 rounded bg-slate-900 text-emerald-400 font-mono">{reset2faCommand(resetFor.email)}</code>
+            <button
+              onClick={() =>
+                navigator.clipboard
+                  ?.writeText(reset2faCommand(resetFor.email))
+                  .then(() => setResetCopied(true))
+                  .catch(() => undefined)
+              }
+              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 font-bold cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5" /> {resetCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-slate-500">
+            They then set up 2FA again at their next sign-in (if 2FA is required for them) or from their name → Two-Step
+            Sign-In.
+          </p>
+        </div>
+      )}
+
       {/* Users List Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
         <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -779,48 +955,146 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                       {u.lastLogin || 'Never'}
                     </td>
 
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => {
-                            if (isSelectedCurrent) return;
-                            setAuthModalTargetUser(u);
-                          }}
-                          disabled={isSelectedCurrent}
-                          title={isSelectedCurrent ? 'Active Session User' : 'Unlock and switch active user session'}
-                          className="px-2 py-1 bg-slate-100 hover:bg-[#2E2C2B] hover:text-white text-slate-700 disabled:opacity-50 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-                        >
-                          <Lock className="w-3 h-3 text-[#F37C1C]" />
-                          <span>{isSelectedCurrent ? 'Active' : 'Switch To'}</span>
-                        </button>
+                    <td className="p-3 text-right min-w-[22rem]">
+                      {(() => {
+                        const acc = u as AccountRow;
+                        const busy = busyRowId === u.id;
+                        const canAct = canManageAccount(currentUser, u);
+                        const locked = !!lockOf(u)?.locked;
+                        const lockedReason = isSelectedCurrent
+                          ? 'You cannot change your own account'
+                          : 'Only Super Admins can manage this account';
+                        return (
+                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            {iManageUsers && (
+                              <button
+                                onClick={() => rowSendReset(u)}
+                                disabled={busy || !u.email}
+                                title={
+                                  !u.email
+                                    ? 'No email on record'
+                                    : locked
+                                      ? 'Unlock the account and email them a link to set a new password'
+                                      : 'Email this user a link to set a new password'
+                                }
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer disabled:opacity-40 ${
+                                  locked
+                                    ? 'border-red-300 bg-red-50 hover:bg-red-100 text-red-800'
+                                    : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                {busy ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : locked ? (
+                                  <LockOpen className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Mail className="w-3.5 h-3.5" />
+                                )}
+                                {locked ? 'Unlock & send password reset mail' : 'Send password reset mail'}
+                              </button>
+                            )}
 
-                        <button
-                          onClick={() => handleOpenEditModal(u)}
-                          disabled={!canManageAccount(currentUser, u) && !isSelectedCurrent}
-                          title="Edit User Name, Role, Permissions & Password"
-                          className="p-1.5 text-slate-500 hover:text-[#F37C1C] hover:bg-orange-50 rounded transition-colors cursor-pointer disabled:opacity-30"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
+                            {isSuperAdmin && (
+                              <button
+                                onClick={() => rowTwoFactor(acc)}
+                                disabled={busy || isSelectedCurrent}
+                                title={
+                                  isSelectedCurrent
+                                    ? 'You cannot change your own 2FA. Another Super Admin can.'
+                                    : twoFactorOn(acc)
+                                      ? 'Stop two-step sign-in for this user only'
+                                      : 'Require two-step sign-in for this user only'
+                                }
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer disabled:opacity-40 ${
+                                  twoFactorOn(acc)
+                                    ? 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                                    : 'border-emerald-200 hover:bg-emerald-50 text-emerald-700'
+                                }`}
+                              >
+                                {twoFactorOn(acc) ? <ShieldOff className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                                {twoFactorOn(acc) ? 'Stop 2FA' : 'Start 2FA'}
+                              </button>
+                            )}
 
-                        <button
-                          onClick={() => {
-                setAccountError(null);
-                setDeletingUserConfirm(u);
-              }}
-                          disabled={!canManageAccount(currentUser, u) || users.length <= 1}
-                          title={
-                            isSelectedCurrent
-                              ? 'Cannot delete active session user'
-                              : users.length <= 1
-                              ? 'Cannot delete last remaining system account'
-                              : 'Delete user account'
-                          }
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer disabled:opacity-20"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                            {isSuperAdmin && (
+                              <button
+                                onClick={() => {
+                                  setResetFor(acc);
+                                  setResetCopied(false);
+                                }}
+                                disabled={!u.email}
+                                title="Remove this user's authenticator app (lost or new phone) so they can set it up again"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-700 transition-colors cursor-pointer disabled:opacity-40"
+                              >
+                                <Smartphone className="w-3.5 h-3.5" />
+                                Reset 2FA
+                              </button>
+                            )}
+
+                            {iManageUsers && (
+                              <button
+                                onClick={() => rowBlock(acc)}
+                                disabled={busy || !canAct || !!acc.pendingAction}
+                                title={
+                                  !canAct
+                                    ? lockedReason
+                                    : acc.pendingAction
+                                      ? 'A request is already waiting for their approval'
+                                      : u.status !== 'ACTIVE'
+                                        ? 'Let this user sign in again'
+                                        : 'Stop this user signing in (can be undone)'
+                                }
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer disabled:opacity-40 ${
+                                  u.status !== 'ACTIVE'
+                                    ? 'border-emerald-200 hover:bg-emerald-50 text-emerald-700'
+                                    : 'border-amber-200 hover:bg-amber-50 text-amber-700'
+                                }`}
+                              >
+                                {u.status !== 'ACTIVE' ? <CircleCheck className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
+                                {u.status !== 'ACTIVE' ? 'Unblock' : 'Block'}
+                              </button>
+                            )}
+
+                            {iManageUsers && (
+                              <button
+                                onClick={() => {
+                                  setAccountError(null);
+                                  setDeletingUserConfirm(u);
+                                }}
+                                disabled={busy || !canAct || users.length <= 1}
+                                title={canAct ? 'Remove Crew Control access (for people who have left)' : lockedReason}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 hover:bg-red-50 text-xs font-bold text-red-700 transition-colors cursor-pointer disabled:opacity-40"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Remove
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleOpenEditModal(u)}
+                              disabled={!canAct && !isSelectedCurrent}
+                              title="Edit User Name, Role, Permissions & Password"
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-orange-50 hover:text-[#F37C1C] text-xs font-bold text-slate-700 transition-colors cursor-pointer disabled:opacity-40"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                              Edit
+                            </button>
+
+                            <button
+                              onClick={() => {
+                                if (isSelectedCurrent) return;
+                                setAuthModalTargetUser(u);
+                              }}
+                              disabled={isSelectedCurrent}
+                              title={isSelectedCurrent ? 'Active Session User' : 'Preview the system as this user (display only)'}
+                              className="px-2 py-1.5 bg-slate-100 hover:bg-[#2E2C2B] hover:text-white text-slate-700 disabled:opacity-50 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                            >
+                              <Lock className="w-3 h-3 text-[#F37C1C]" />
+                              <span>{isSelectedCurrent ? 'Active' : 'Switch To'}</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 );
@@ -1201,7 +1475,11 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                     required
                     value={formStaffNumber}
                     onChange={(e) => setFormStaffNumber(e.target.value)}
-                    readOnly={!!editingUser && editingUser.id === currentUser.id}
+                    readOnly={
+                      !!editingUser &&
+                      editingUser.id === currentUser.id &&
+                      (editingUser.role === 'FLIGHT_CREW' || editingUser.role === 'PILOT_CABIN')
+                    }
                     placeholder="e.g. ZA-ADM-001"
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
                   />
@@ -1221,6 +1499,11 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                       </option>
                     ))}
                   </select>
+                  {editingUser && editingUser.id === currentUser.id && (
+                    <p className="text-[10px] text-slate-500 mt-1 font-normal">
+                      You can't change your own role. Another {editingUser.role === 'SUPER_ADMIN' ? 'Super Admin' : 'System Admin'} can.
+                    </p>
+                  )}
                   {editingUser && needsConfirmation(editingUser) && editingUser.id !== currentUser.id && (
                     <p className="text-[10px] text-amber-700 mt-1 font-normal">
                       Changing a Super Admin's role is sent to them for approval.
