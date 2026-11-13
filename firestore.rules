@@ -122,12 +122,6 @@ service cloud.firestore {
     // logged as "<record's _auditId>-del".
     // ---------------------------------------------------------------------
 
-    // Off while testing (no settings/audit document); on, for good, from go-live.
-    function auditOn() {
-      return exists(/databases/$(database)/documents/settings/audit)
-        && get(/databases/$(database)/documents/settings/audit).data.get('enabled', false) == true;
-    }
-
     function auditPath(auditId) {
       return /databases/$(database)/documents/auditLogs/$(auditId);
     }
@@ -139,11 +133,11 @@ service cloud.firestore {
 
     function auditedWrite(area, id) {
       let auditId = request.resource.data.get('_auditId', '');
-      return !auditOn() || (auditId is string && auditId.size() > 0 && auditEntryFor(auditId, area, id));
+      return auditId is string && auditId.size() > 0 && auditEntryFor(auditId, area, id);
     }
 
     function auditedDelete(area, coll, id) {
-      return !auditOn() || auditEntryFor(resource.data.get('_auditId', 'legacy-' + coll + '-' + id) + '-del', area, id);
+      return auditEntryFor(resource.data.get('_auditId', 'legacy-' + coll + '-' + id) + '-del', area, id);
     }
 
     match /crew/{id} {
@@ -347,17 +341,7 @@ service cloud.firestore {
     // 2FA is required. From the app it can only be switched ON for everyone
     // (from a session that used 2FA); `npm run 2fa:relax` is the emergency off.
     match /settings/{docId} {
-      // settings/audit is readable before sign-in: the sign-in page must know
-      // whether to record failed sign-ins.
-      allow read: if signedIn() || docId == 'audit';
-      // Audit trail switch: off (no document) while testing; a Super Admin
-      // turns it on at go-live, once. It can never be turned off again.
-      allow create: if docId == 'audit'
-        && isSuperAdmin()
-        && request.resource.data.keys().hasOnly(['enabled', 'enabledAt', 'enabledBy'])
-        && request.resource.data.enabled == true
-        && request.resource.data.enabledAt == request.time
-        && request.resource.data.enabledBy == request.auth.token.get('email', '');
+      allow read: if signedIn();
       allow create, update: if docId == 'security'
         && isSuperAdmin()
         && request.resource.data.keys().hasOnly(['require2fa', 'updatedBy', 'updatedAt'])
@@ -393,8 +377,6 @@ service cloud.firestore {
     }
 
     // The audit log: nobody can edit or delete an entry, Super Admins included.
-    // Nothing is recorded until the trail is turned on at go-live (or in the
-    // same batch that turns it on, for its "started" entry).
     // Super Admins and Auditors read the whole log; roster managers read the
     // history of operational records (ops == true) only.
     function canReadFullAuditLog() {
@@ -446,9 +428,7 @@ service cloud.firestore {
     match /auditLogs/{id} {
       allow read: if canReadFullAuditLog()
         || (canManageRoster() && resource.data.get('ops', false) == true);
-      allow create: if validAuditEntry(request.resource.data)
-        && (auditOn() || getAfter(/databases/$(database)/documents/settings/audit).data.enabled == true)
-        && (
+      allow create: if validAuditEntry(request.resource.data) && (
           (isActiveUser()
             && request.resource.data.actorUid == request.auth.uid
             && request.resource.data.actorRole == role()

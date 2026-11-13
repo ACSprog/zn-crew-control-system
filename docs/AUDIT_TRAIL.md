@@ -16,25 +16,6 @@ monthly review procedure, and lists the limitations the organisation should decl
 
 ---
 
-## 0. Start of recording (go-live)
-
-The audit trail is **off while the system is being tested**, so test sign-ins and test data
-don't fill the log. The Audit Log page shows an amber "Audit trail is OFF: test environment"
-banner during this time.
-
-At go-live, after test accounts and test data have been removed, a **Super Admin** clicks
-**Turn on audit trail (go-live)** on the Audit Log page. This:
-
-- saves the switch (`settings/audit`: on, the server time, the Super Admin's email);
-- in the same database write, records the first entry, **"Audit trail started"** (CRITICAL);
-- is **permanent**. The security rules allow the switch to be created once, and never changed or
-  deleted, so nobody can pause the log afterwards. The page then shows "Recording since …".
-
-The log therefore starts at go-live. Activity before that date was test activity and is not part
-of the record. The "Audit trail started" entry is the evidence of when recording began.
-
----
-
 ## 1. Control mapping
 
 | Control | Requirement (summary) | How the system meets it |
@@ -135,18 +116,15 @@ The page shows an amber warning when no review has been recorded in the last 31 
 2. **User-account changes are logged by the app, not enforced by the database.** Operational data changes can't skip the log (section 3.3). Changes to user accounts (`users`) are recorded every time someone uses the system's screens, but the database does not refuse an account change whose log entry is missing. A user with an admin account who wrote to the database directly, outside the app, could change an account without an entry. The account change itself is still subject to the access rules (e.g. Super Admin changes need a second Super Admin).
 3. **Before/after values are supplied by the app.** The database guarantees the person, role, time and record of every entry, and that one exists for each data change. The field values in "before" and "after" are calculated by the app. Someone who bypassed the app with their own valid account could write misleading values for a change they themselves made, but not hide that they made it.
 4. **Failed sign-in entries can be written without an account.** Wrong passwords and codes happen before sign-in, so the rules accept these few entry types (failure only, no role, no data) from anyone. The email in such an entry is the one that was typed, not a verified identity, and the entries could in theory be added in bulk by someone abusing the public sign-in path.
-5. **The Google Cloud project owner is outside the rules.** Security rules bind every app user. They don't bind the Google account that owns the Firebase project, or server keys (service accounts). Those could delete entries, or the go-live switch, through the Google Cloud console or the Admin SDK. Control: keep project ownership to named IT staff with 2-step verification on their Google accounts, keep service-account keys out of circulation, and review Google Cloud's own audit logs (Cloud Audit Logs → Admin Activity) for the project.
-6. **Recording starts at go-live.** Nothing is recorded while the switch is off (testing). The switch can only be turned on, once, so the log can't be paused afterwards.
-7. **Free-plan limits.** One extract loads at most 5,000 entries; choose shorter periods for busy months. The log has no automatic archiving: the monthly Excel export is the offline copy. If the free daily database quota runs out, the system pauses until the next day. During that time no changes, and so no entries, can be made.
+5. **The Google Cloud project owner is outside the rules.** Security rules bind every app user. They don't bind the Google account that owns the Firebase project, or server keys (service accounts). Those could delete entries through the Google Cloud console or the Admin SDK. Control: keep project ownership to named IT staff with 2-step verification on their Google accounts, keep service-account keys out of circulation, and review Google Cloud's own audit logs (Cloud Audit Logs → Admin Activity) for the project.
+6. **Free-plan limits.** One extract loads at most 5,000 entries; choose shorter periods for busy months. The log has no automatic archiving: the monthly Excel export is the offline copy. If the free daily database quota runs out, the system pauses until the next day. During that time no changes, and so no entries, can be made.
 
 ---
 
 ## 7. Testing the controls (first live test)
 
-At go-live (after turning the audit trail on, section 0), and after each deployment of new
-security rules, a Super Admin should confirm:
+After each deployment of new security rules, a Super Admin should confirm:
 
-0. The Audit Log shows "Recording since …" and an "Audit trail started" entry.
 1. Edit a crew member's base. **Audit Log → Show period**: an "Updated crew record" entry shows base before → after, your name, role, device and a server time.
 2. **Record history → Crew member → that person → Audit pack (PDF)**: the change appears. The pack opens ready to save as PDF.
 3. Sign out. Sign in with a wrong password, then correctly. Both appear (Failed / OK).

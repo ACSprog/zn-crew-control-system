@@ -9,7 +9,6 @@ import {
   History,
   Loader2,
   Lock,
-  Power,
   Search,
   ShieldCheck,
 } from 'lucide-react';
@@ -23,10 +22,7 @@ import {
   loadRecordHistory,
   loadReviews,
   logAudit,
-  startAuditTrail,
-  subscribeAuditSwitch,
   toRow,
-  type AuditSwitch,
   MAX_PERIOD_ENTRIES,
   type AnyAuditEntry,
   type AuditArea,
@@ -162,9 +158,6 @@ function EntryRows({ entries, emptyText }: { entries: AnyAuditEntry[]; emptyText
 
 export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, flights, fleet }) => {
   const access = auditAccess(currentUser.role);
-  const [auditSwitch, setAuditSwitch] = useState<AuditSwitch>({ loaded: false, enabled: false, enabledAt: null, enabledBy: '' });
-  useEffect(() => subscribeAuditSwitch(setAuditSwitch), []);
-  const [starting, setStarting] = useState(false);
   const madeBy = `${currentUser.name}${currentUser.email ? ` <${currentUser.email}>` : ''} (${currentUser.role})`;
 
   // ---- Period log (full readers) ----
@@ -396,27 +389,6 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
     }
   };
 
-  const turnOn = async () => {
-    const ok = window.confirm(
-      'Turn on the audit trail for go-live?\n\nFrom now on every sign-in, change, user change and export is recorded permanently.\nIt can NOT be turned off again.\n\nDo this when testing is finished (test accounts and test data removed).'
-    );
-    if (!ok) return;
-    setStarting(true);
-    setError('');
-    try {
-      await startAuditTrail();
-      setNotice('The audit trail is on. Every action is now recorded.');
-      setTimeout(() => {
-        setToDay(dayInput(new Date()));
-        loadPeriod();
-      }, 1500);
-    } catch (e) {
-      setError(`Could not turn on the audit trail: ${(e as Error)?.message || e}`);
-    } finally {
-      setStarting(false);
-    }
-  };
-
   if (access === 'none') {
     return (
       <div className="p-6">
@@ -461,32 +433,6 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
         )}
       </div>
 
-      {auditSwitch.loaded && !auditSwitch.enabled && (
-        <div className="p-4 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-900 flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="text-xs space-y-1">
-            <p className="font-extrabold text-sm flex items-center gap-2">
-              <Power className="w-4 h-4" /> Audit trail is OFF: test environment
-            </p>
-            <p>
-              Nothing is being recorded, so testing doesn't fill the audit log. At go-live, after test accounts and test data are removed,
-              {currentUser.role === 'SUPER_ADMIN' ? ' turn it on here.' : ' a Super Admin turns it on here.'} Once on, it can't be turned off.
-            </p>
-          </div>
-          {currentUser.role === 'SUPER_ADMIN' && (
-            <button onClick={turnOn} disabled={starting} className={`${btn} bg-amber-600 hover:bg-amber-700 text-white shrink-0`}>
-              {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />} Turn on audit trail (go-live)
-            </button>
-          )}
-        </div>
-      )}
-
-      {auditSwitch.enabled && (
-        <p className="text-[11px] text-emerald-700 flex items-center gap-1.5 -mt-3">
-          <Lock className="w-3 h-3" /> Recording since {auditSwitch.enabledAt ? fmtDateTime(auditSwitch.enabledAt) : 'go-live'}
-          {auditSwitch.enabledBy && ` (turned on by ${auditSwitch.enabledBy})`}. It can't be turned off.
-        </p>
-      )}
-
       {error && (
         <div className="p-3 rounded-xl border bg-red-50 border-red-300 text-red-900 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
@@ -497,7 +443,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
       {access === 'full' && (
         <>
           {/* Review status */}
-          {auditSwitch.enabled && <div
+          <div
             className={`p-4 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
               reviewOverdue ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-white border-slate-200 text-slate-700'
             }`}
@@ -515,7 +461,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
               )}
             </div>
             {reviews.length > 1 && <span className="text-slate-500">{reviews.length} reviews recorded</span>}
-          </div>}
+          </div>
 
           {reviewOpen && (
             <div className="bg-white p-4 rounded-xl border border-emerald-300 shadow-xs space-y-3">

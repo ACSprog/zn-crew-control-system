@@ -16,14 +16,12 @@ import {
   documentId,
   getDocs,
   limit,
-  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
   Timestamp,
   where,
-  writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -126,112 +124,6 @@ export type AnyAuditEntry = AuditEntry | LegacyAuditEntry;
 
 export function isV3(e: AnyAuditEntry): e is AuditEntry {
   return (e as AuditEntry).v === AUDIT_SCHEMA_VERSION;
-}
-
-// ---------------------------------------------------------------------------
-// The audit trail switch (settings/audit). OFF while the system is being
-// tested, so test activity is not recorded; a Super Admin turns it ON at
-// go-live, once; the rules never let it be turned off again.
-// ---------------------------------------------------------------------------
-
-export interface AuditSwitch {
-  loaded: boolean;
-  enabled: boolean;
-  enabledAt: Date | null;
-  enabledBy: string;
-}
-
-let auditSwitch: AuditSwitch = { loaded: false, enabled: false, enabledAt: null, enabledBy: '' };
-const switchListeners = new Set<(s: AuditSwitch) => void>();
-let switchWatching = false;
-let resolveFirstSwitch: (() => void) | null = null;
-const firstSwitch = new Promise<void>((r) => (resolveFirstSwitch = r));
-
-function setSwitch(next: AuditSwitch) {
-  auditSwitch = next;
-  resolveFirstSwitch?.();
-  switchListeners.forEach((l) => l(next));
-}
-
-function watchAuditSwitch() {
-  if (switchWatching) return;
-  switchWatching = true;
-  onSnapshot(
-    doc(db, 'settings', 'audit'),
-    (snap) => {
-      const d = snap.exists() ? snap.data() : null;
-      const at = d?.enabledAt as Timestamp | null | undefined;
-      setSwitch({
-        loaded: true,
-        enabled: d?.enabled === true,
-        enabledAt: at && typeof at.toDate === 'function' ? at.toDate() : null,
-        enabledBy: typeof d?.enabledBy === 'string' ? d.enabledBy : '',
-      });
-    },
-    (err) => {
-      console.warn('[audit] Could not read the audit trail switch:', err);
-      switchWatching = false;
-      setSwitch({ ...auditSwitch, loaded: true });
-    }
-  );
-}
-
-/** Whether actions are being recorded (waits up to 8 s for the first answer). */
-export async function auditIsOn(): Promise<boolean> {
-  watchAuditSwitch();
-  if (!auditSwitch.loaded) await Promise.race([firstSwitch, new Promise((r) => setTimeout(r, 8000))]);
-  return auditSwitch.enabled;
-}
-
-export function getAuditSwitch(): AuditSwitch {
-  watchAuditSwitch();
-  return auditSwitch;
-}
-
-export function subscribeAuditSwitch(listener: (s: AuditSwitch) => void): () => void {
-  watchAuditSwitch();
-  switchListeners.add(listener);
-  listener(auditSwitch);
-  return () => switchListeners.delete(listener);
-}
-
-/**
- * Super Admin, at go-live: start recording. Saved together with the
- * "Audit trail started" entry. Cannot be undone.
- */
-export async function startAuditTrail(): Promise<void> {
-  const actor = getAuditActor();
-  if (!actor) throw new Error('Sign in again and retry.');
-  if (actor.role !== 'SUPER_ADMIN') throw new Error('Only a Super Admin can turn on the audit trail.');
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'settings', 'audit'), { enabled: true, enabledAt: serverTimestamp(), enabledBy: actor.email });
-  batch.set(
-    doc(db, 'auditLogs', newAuditId()),
-    buildAuditEntry(
-      {
-        area: 'security',
-        action: 'Audit trail started',
-        details: 'Go-live: the audit trail was switched on. From now on every action is recorded. It cannot be switched off.',
-        severity: 'CRITICAL',
-        targetId: 'settings/audit',
-        targetLabel: 'Audit trail',
-        changedFields: ['enabled'],
-        before: { enabled: false },
-        after: { enabled: true },
-      },
-      actor
-    )
-  );
-  try {
-    await batch.commit();
-  } catch (e) {
-    const code = (e as { code?: string })?.code;
-    throw new Error(
-      code === 'permission-denied'
-        ? 'Permission denied. It may already be on, or the latest security rules are not deployed yet (npm run setup).'
-        : (e as Error)?.message || String(e)
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +276,6 @@ export function buildAuditEntry(input: AuditInput, actor: AuditActor): DocumentD
 export async function logAudit(input: AuditInput): Promise<string | null> {
   const actor = getAuditActor();
   if (!actor) return null;
-  if (!(await auditIsOn())) return null; // testing: nothing is recorded
   const id = newAuditId();
   try {
     await setDoc(doc(db, 'auditLogs', id), buildAuditEntry(input, actor));
@@ -405,7 +296,6 @@ export async function logSignInFailure(
   email: string,
   details: string
 ): Promise<void> {
-  if (!(await auditIsOn())) return; // testing: nothing is recorded
   const user = getAuth(app).currentUser;
   const entry = buildAuditEntry(
     { area: 'sign-in', action, details, severity: action === 'Account locked' ? 'CRITICAL' : 'WARNING', outcome: 'failure' },
