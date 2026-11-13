@@ -1,0 +1,47 @@
+# Test site: merging into master publishes the app to the TEST address
+# (see .firebaserc → targets → hosting → test, e.g.
+# https://zn-crew-control-system-test.web.app) and the Firestore security rules.
+# Anyone with the link can open it. The main address is NOT touched; that only
+# happens through the manual "Go live" workflow.
+name: Deploy test site
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-test
+  cancel-in-progress: false
+
+jobs:
+  test-site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      - name: Deploy Firestore rules
+        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-contol-system --non-interactive
+
+      - name: Deploy to the test site
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: zn-crew-contol-system
+          target: test
+          channelId: live

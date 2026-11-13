@@ -9,7 +9,10 @@
     "create-user": "node scripts/create-user.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && firebase deploy --only auth,firestore:rules,hosting",
+    "deploy": "npm run build && npx --yes firebase-tools@latest deploy --only auth,firestore:rules,hosting:test",
+    "publish-test": "bash scripts/publish-test.sh",
+    "go-live": "bash scripts/go-live.sh",
+    "live:off": "npx --yes firebase-tools@latest hosting:disable --site zn-crew-contol-system",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "paid:dev-server": "tsx server.ts",
@@ -17,7 +20,8 @@
     "setup": "bash scripts/setup-firebase.sh",
     "2fa:enable": "node scripts/security.mjs --enable",
     "2fa:relax": "node scripts/security.mjs --relax",
-    "reset-2fa": "node scripts/reset-2fa.mjs"
+    "reset-2fa": "node scripts/reset-2fa.mjs",
+    "github:deploy": "node scripts/github-deploy.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
