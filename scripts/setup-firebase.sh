@@ -58,6 +58,10 @@ else
   ok "Signed in"
 fi
 
+# ---------------------------------------------------------------- 1b. Google APIs
+# New projects start with the Firestore/Rules/Hosting APIs switched off.
+node scripts/enable-apis.mjs --project "$PROJECT_ID"
+
 # ---------------------------------------------------------------- 2. firestore
 bold "2/5  Firestore (default) database"
 if $FB firestore:databases:list --project "$PROJECT_ID" --json 2>/dev/null | grep -q "databases/(default)"; then
