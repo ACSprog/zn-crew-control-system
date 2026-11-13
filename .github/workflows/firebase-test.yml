@@ -1,6 +1,8 @@
-# Production: merging into master publishes the live site
-# (https://zn-crew-contol-system.web.app) and the Firestore security rules.
-name: Deploy live
+# TEST environment: merging into master publishes the app and the Firestore
+# security rules to the TEST project (https://zn-crew-control-system-test.web.app).
+# The live project is only updated by the manual "Go live" workflow.
+# Secret: FIREBASE_SERVICE_ACCOUNT = a key of the TEST project.
+name: Deploy test
 
 on:
   push:
@@ -11,11 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: firebase-live
+  group: firebase-test
   cancel-in-progress: false
 
 jobs:
-  live:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +34,12 @@ jobs:
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       - name: Deploy Firestore rules
-        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-contol-system --non-interactive
+        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-control-system-test --non-interactive
 
-      - name: Deploy hosting (live)
+      - name: Deploy website (test project)
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: zn-crew-contol-system
-          channelId: live
+          projectId: zn-crew-control-system-test
+          channelId: live  # = the test project's main site

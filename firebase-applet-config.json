@@ -1,11 +1,11 @@
 {
-  "projectId": "zn-crew-contol-system",
-  "appId": "1:1072234480365:web:af635e032d0d13b52982e4",
-  "apiKey": "AIzaSyA1DUnFNKNGmBLBU031KKKIyHXCXHBV6tE",
-  "authDomain": "zn-crew-contol-system.firebaseapp.com",
-  "storageBucket": "zn-crew-contol-system.firebasestorage.app",
-  "messagingSenderId": "1072234480365",
-  "measurementId": "G-G8S6M18HGZ",
+  "projectId": "zn-crew-control-system-test",
+  "appId": "1:684340044397:web:8e035988d68e9e7c56d564",
+  "apiKey": "AIzaSyDn4N54M406MCazEafWb4SQRY90Z2G4pjM",
+  "authDomain": "zn-crew-control-system-test.firebaseapp.com",
+  "storageBucket": "zn-crew-control-system-test.firebasestorage.app",
+  "messagingSenderId": "684340044397",
+  "measurementId": "G-RVF5X7RCZV",
   "oAuthClientId": "",
   "recaptchaSiteKey": ""
 }

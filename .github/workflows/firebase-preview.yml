@@ -1,6 +1,6 @@
 # Staging: every pull request gets its own temporary Firebase Hosting URL
 # (a "preview channel"), posted as a comment on the PR. Free on the Spark plan.
-# The live site is NOT touched.
+# Uses the TEST project; the live project is NOT touched.
 #
 # One-time setup: add the repo secret FIREBASE_SERVICE_ACCOUNT
 # (see docs/FREE_TIER.md → "Hosting online before going live").
@@ -37,13 +37,13 @@ jobs:
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       - name: Deploy Firestore rules
-        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-contol-system --non-interactive
+        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-control-system-test --non-interactive
 
       - name: Deploy to preview channel
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: zn-crew-contol-system
+          projectId: zn-crew-control-system-test
           channelId: staging
           expires: 30d
