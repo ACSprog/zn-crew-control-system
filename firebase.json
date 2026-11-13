@@ -30,6 +30,15 @@
             "value": "no-cache"
           }
         ]
+      },
+      {
+        "source": "**/@(favicon.png|favicon.ico|apple-touch-icon.png|manifest.json|pwa-192.png|pwa-512.png)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
       }
     ]
   },

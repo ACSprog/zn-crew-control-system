@@ -1,5 +1,5 @@
 // Zambia Airways Crew Control PWA - Background Sync & Offline Service Worker
-const CACHE_VERSION = 'za-crew-cache-v5';
+const CACHE_VERSION = 'za-crew-cache-v6';
 const ROSTER_DATA_CACHE = 'za-roster-data-v3';
 const STATIC_ASSETS = [
   '/',
