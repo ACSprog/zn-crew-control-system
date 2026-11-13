@@ -22,7 +22,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PROJECT_ID="$(node -p "require('./firebase-applet-config.json').projectId")"
+# Which environment: test (default, firebase-applet-config.json) or live
+# (firebase-applet-config.live.json). See docs/ENVIRONMENTS.md.
+ENV_NAME="${1:-test}"
+case "$ENV_NAME" in
+  test) CONFIG=firebase-applet-config.json; BUILD="npm run build"; SECRET=FIREBASE_SERVICE_ACCOUNT; LIVE_FLAG="" ;;
+  live) CONFIG=firebase-applet-config.live.json; BUILD="npm run build:live"; SECRET=FIREBASE_SERVICE_ACCOUNT_LIVE; LIVE_FLAG="--live" ;;
+  *) echo "Usage: bash scripts/setup-firebase.sh [test|live]"; exit 1 ;;
+esac
+PROJECT_ID="$(node -p "require('./$CONFIG').projectId")"
+[[ -n "$PROJECT_ID" ]] || { echo "  ✘ $CONFIG has no projectId yet. Add the live project's firebaseConfig first."; exit 1; }
 REGION="${FIRESTORE_REGION:-africa-south1}"
 FB="npx --yes firebase-tools@latest"
 
@@ -30,7 +39,7 @@ bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
-bold "ZN Crew Control setup for Firebase project: $PROJECT_ID"
+bold "ZN Crew Control setup: $(echo "$ENV_NAME" | tr a-z A-Z) environment, Firebase project $PROJECT_ID"
 echo "  Firestore region: $REGION (set FIRESTORE_REGION=... to change; cannot be changed later)"
 read -r -p "  Continue? [y/N] " go
 [[ "$go" =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 0; }
@@ -70,9 +79,9 @@ fi
 # ---------------------------------------------------------------- 4. build + deploy
 bold "4/5  Build and deploy (sign-in provider, security rules, website)"
 npm ci
-npm run build
+$BUILD
 $FB deploy --only auth,firestore:rules,hosting --project "$PROJECT_ID" --non-interactive
-ok "Live at https://$PROJECT_ID.web.app"
+ok "$(echo "$ENV_NAME" | tr a-z A-Z) site online at https://$PROJECT_ID.web.app"
 
 # ---------------------------------------------------------------- 5. admin user + GitHub secret
 bold "5/5  First SUPER_ADMIN user and GitHub auto-deploy secret (optional)"
@@ -93,19 +102,19 @@ esac
 read -r -p "  Admin email: " ADMIN_EMAIL
 read -r -p "  Admin full name: " ADMIN_NAME
 read -r -s -p "  Temporary password (min 6 chars, hidden): " ADMIN_PASS; echo
-GOOGLE_APPLICATION_CREDENTIALS="$KEY" node scripts/create-user.mjs \
+GOOGLE_APPLICATION_CREDENTIALS="$KEY" node scripts/create-user.mjs $LIVE_FLAG \
   --email="$ADMIN_EMAIL" --password="$ADMIN_PASS" --name="$ADMIN_NAME" --role=SUPER_ADMIN
 unset ADMIN_PASS
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  gh secret set FIREBASE_SERVICE_ACCOUNT < "$KEY"
-  ok "GitHub secret FIREBASE_SERVICE_ACCOUNT set — future merges to master deploy automatically"
+  gh secret set "$SECRET" < "$KEY"
+  ok "GitHub secret $SECRET set"
 else
   warn "GitHub CLI not installed/signed in. Add the secret by hand:"
   echo "     GitHub repo -> Settings -> Secrets and variables -> Actions -> New repository secret"
-  echo "     Name: FIREBASE_SERVICE_ACCOUNT   Value: the whole contents of $KEY"
+  echo "     Name: $SECRET   Value: the whole contents of $KEY"
 fi
 
 bold "All done. Sign in at https://$PROJECT_ID.web.app with $ADMIN_EMAIL"
-echo "  Next (recommended): turn on two-step sign-in with  npm run 2fa:enable"
+echo "  Next (recommended): turn on two-step sign-in with  npm run 2fa:enable${LIVE_FLAG:+ -- --live}"
 echo "  See docs/LOGIN_AND_2FA.md"

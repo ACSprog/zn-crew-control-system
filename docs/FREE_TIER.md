@@ -149,9 +149,9 @@ GitHub Actions deploys automatically:
 
 - **Every pull request** builds the app and publishes it to a Firebase Hosting **preview
   channel**. This is a private-ish test URL like
-  `https://zn-crew-contol-system--staging-xxxx.web.app`, and the bot posts it as a comment
+  `https://zn-crew-control-system-test--staging-xxxx.web.app`, and the bot posts it as a comment
   on the PR. It expires after 30 days, and the live site is not touched.
-- **Merging into `master`** publishes the live site at `https://zn-crew-contol-system.web.app`.
+- **Merging into `master`** publishes the **test** site at `https://zn-crew-control-system-test.web.app`. The live system is a separate project, updated only by **Go live** (see [ENVIRONMENTS.md](ENVIRONMENTS.md)).
 - Both also deploy `firestore.rules`.
 
 The preview and the live site share **one** Firestore database and **one** set of users.
@@ -160,7 +160,7 @@ launch.
 
 ### One-time setup
 
-1. In the **Firebase console** for `zn-crew-contol-system`:
+1. In the **Firebase console** for the project (test: `zn-crew-control-system-test`):
    - **Build → Authentication → Get started**, then enable **Email/Password**.
    - **Build → Firestore Database → Create database**:
      - Database ID `(default)`

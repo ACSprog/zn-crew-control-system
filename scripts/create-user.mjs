@@ -24,7 +24,11 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const firebaseConfig = JSON.parse(readFileSync(join(__dirname, '..', 'firebase-applet-config.json'), 'utf8'));
+// --live (or FIREBASE_ENV=live) targets the live project; default is the test project
+const useLive = process.argv.includes('--live') || process.env.FIREBASE_ENV === 'live';
+const firebaseConfig = JSON.parse(
+  readFileSync(join(__dirname, '..', useLive ? 'firebase-applet-config.live.json' : 'firebase-applet-config.json'), 'utf8')
+);
 
 function parseArgs() {
   const args = {};
@@ -103,11 +107,15 @@ Drop --emulator to target live production Firebase.
     admin.initializeApp({ projectId: firebaseConfig.projectId });
     console.log(`[create-user] Targeting LOCAL EMULATOR (project: ${firebaseConfig.projectId})`);
   } else {
+    if (!firebaseConfig.projectId) {
+      console.error('[create-user] firebase-applet-config.live.json has no project yet.');
+      process.exit(1);
+    }
     admin.initializeApp({
       credential: admin.credential.applicationDefault(),
       projectId: firebaseConfig.projectId,
     });
-    console.log(`[create-user] Targeting LIVE PRODUCTION Firebase project: ${firebaseConfig.projectId}`);
+    console.log(`[create-user] Targeting the ${useLive ? 'LIVE' : 'TEST'} Firebase project: ${firebaseConfig.projectId}`);
     console.log('[create-user] Make sure this is really what you want — this writes a real account.');
   }
 

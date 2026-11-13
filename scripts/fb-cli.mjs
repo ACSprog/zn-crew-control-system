@@ -38,10 +38,10 @@ export function parseArgs(argv) {
   return args;
 }
 
-/** Project ID from firebase-applet-config.json (or --project). */
+/** Project ID: --project <id>, else the live config with --live, else the test config. */
 export function projectIdFrom(args) {
   if (typeof args.project === 'string' && args.project) return args.project;
-  const file = path.join(process.cwd(), 'firebase-applet-config.json');
+  const file = path.join(process.cwd(), args.live ? 'firebase-applet-config.live.json' : 'firebase-applet-config.json');
   if (!existsSync(file)) return '';
   try {
     return JSON.parse(readFileSync(file, 'utf8')).projectId || '';

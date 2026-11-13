@@ -14,6 +14,7 @@ View your app in AI Studio: https://ai.studio/apps/33b74f1d-975c-491a-96d7-ace7a
 
 > This branch runs entirely on free tiers (Firebase Spark + Microsoft 365).
 > Sign-in, 2FA and user accounts: [docs/LOGIN_AND_2FA.md](docs/LOGIN_AND_2FA.md).
+> Test and live environments (two Firebase projects): [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md).
 > See [docs/FREE_TIER.md](docs/FREE_TIER.md) for what changed and how to set up the
 > Power Automate notification flow.
 

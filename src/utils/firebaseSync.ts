@@ -34,7 +34,20 @@ import {
   RosterAcknowledgment,
 } from '../types';
 
-import firebaseConfigData from '../../firebase-applet-config.json';
+import testFirebaseConfig from '../../firebase-applet-config.json';
+import liveFirebaseConfig from '../../firebase-applet-config.live.json';
+
+/**
+ * Two separate Firebase projects (docs/ENVIRONMENTS.md):
+ *   test - firebase-applet-config.json      (npm run dev / build / deploy)
+ *   live - firebase-applet-config.live.json (npm run build:live / go-live)
+ * Each has its own database, users and audit log.
+ */
+export const APP_ENV: 'test' | 'live' = import.meta.env.MODE === 'live' ? 'live' : 'test';
+if (APP_ENV === 'live' && !liveFirebaseConfig.projectId) {
+  throw new Error('Live build without a live Firebase project: fill in firebase-applet-config.live.json.');
+}
+const firebaseConfigData = APP_ENV === 'live' ? liveFirebaseConfig : testFirebaseConfig;
 
 export const firebaseWebConfig = {
   apiKey: firebaseConfigData.apiKey,
