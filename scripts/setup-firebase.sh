@@ -99,6 +99,13 @@ if [[ -z "$KEY" ]]; then
   exit 0
 fi
 [[ -f "$KEY" ]] || { echo "  ✘ File not found: $KEY"; exit 1; }
+KEY_PROJECT="$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).project_id||'')}catch(e){}" "$KEY")"
+if [[ "$KEY_PROJECT" != "$PROJECT_ID" ]]; then
+  echo "  ✘ That key belongs to project '${KEY_PROJECT:-unknown}', not $PROJECT_ID."
+  echo "    Download a key of $PROJECT_ID: https://console.firebase.google.com/project/$PROJECT_ID/settings/serviceaccounts/adminsdk"
+  echo "    (Generate new private key; the file name starts with $PROJECT_ID-firebase-adminsdk-)"
+  exit 1
+fi
 case "$(cd "$(dirname "$KEY")" && pwd)/" in
   "$(pwd)/"*) echo "  ✘ Move the key file outside the project folder first (it must never be committed)."; exit 1 ;;
 esac
