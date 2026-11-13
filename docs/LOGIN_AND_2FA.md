@@ -94,27 +94,3 @@ A Super Admin can only *request* to remove, block or change the role of another 
 | `npm run 2fa:relax` | Stop requiring 2FA for everyone, e.g. if nobody can sign in |
 | `npm run reset-2fa -- --email x@y` | Remove one person's authenticator (lost phone) |
 | `npm run create-user -- ...` | Create or repair an account with a service-account key, e.g. to recover the first Super Admin |
-
-## Test Mode (letting testers in before go-live)
-
-**Turning it on:** User Access → **Turn Test Mode On** (Super Admins only). Set the allowed email
-domain first; leave it empty for any email address.
-
-**While Test Mode is on:**
-- The sign-in page shows **Create a test account**.
-- Testers enter their name and email, choose a **non-admin** role (OCC Controller, Scheduler,
-  Chief Pilot, Auditor or Flight Crew) and a password, and are signed straight in.
-- Their accounts carry a **TEST** badge in User Access, and you can manage them like any other
-  user (change role, block, remove).
-- A Super Admin can still upgrade a tester to System Admin if they need to test user management.
-
-**Before going live:**
-1. Click **Turn Test Mode Off**. No new test accounts can be created after that.
-2. Click **Remove all test accounts**.
-3. Clear out test data (crew, flights, rosters) entered during testing.
-
-**Things to know:**
-- The security rules enforce all of this: sign-up only while Test Mode is on, only for the allowed
-  domain, never an admin role, and the TEST flag can't be removed.
-- `npm run 2fa:relax` and `npm run 2fa:enable -- --require` rewrite the security settings. Running
-  either one also switches Test Mode off.

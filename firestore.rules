@@ -239,19 +239,6 @@ service cloud.firestore {
       // System Admins / Super Admins can list everyone.
       allow read: if (signedIn() && request.auth.uid == uid) || isUserManager();
 
-      // Test Mode: a tester creates their own profile (never an admin role)
-      allow create: if signedIn() && request.auth.uid == uid
-        && testModeOn()
-        && request.resource.data.keys().hasOnly(['id', 'name', 'email', 'staffNumber', 'role', 'department', 'base',
-            'status', 'avatarInitials', 'permissions', 'testAccount', 'createdAt', 'createdBy'])
-        && validUserFields(request.resource.data)
-        && request.resource.data.get('id', uid) == uid
-        && request.resource.data.email == request.auth.token.email.lower()
-        && testSignupDomainOk(request.resource.data.email)
-        && juniorRole(request.resource.data.role)
-        && request.resource.data.status == 'ACTIVE'
-        && request.resource.data.testAccount == true;
-
       // New accounts: Super Admins any role, System Admins only below Admin
       allow create: if request.auth.uid != uid
         && validNewUser(uid)
@@ -263,7 +250,7 @@ service cloud.firestore {
       allow update: if request.auth.uid != uid
         && !isSuperAdminDoc(resource.data)
         && validUserFields(request.resource.data)
-        && !userChanges().hasAny(['email', 'pendingAction', 'twoFactorEnrolled', 'mustChangePassword', 'tempPasswordHash', 'createdAt', 'createdBy', 'id', 'testAccount'])
+        && !userChanges().hasAny(['email', 'pendingAction', 'twoFactorEnrolled', 'mustChangePassword', 'tempPasswordHash', 'createdAt', 'createdBy', 'id'])
         && isUserManager()
         && (!userChanges().hasAny(['twoFactor']) || isSuperAdmin())
         && (isSuperAdmin()
@@ -319,38 +306,16 @@ service cloud.firestore {
         && pendingRequesterIsSuperAdmin();
     }
 
-    // Security settings (settings/security):
-    //  - require2fa: 2FA for everyone. From the app it can only be switched
-    //    ON (from a session that used 2FA); `npm run 2fa:relax` is the
-    //    emergency off.
-    //  - testMode / testSignupDomain: while Test Mode is on, people with an
-    //    allowed email may create their own (non-admin) test account.
-    // Readable without signing in, because the sign-in page shows "Create a
-    // test account" only while Test Mode is on. Holds no secrets.
-    function testModeOn() {
-      return exists(/databases/$(database)/documents/settings/security)
-        && get(/databases/$(database)/documents/settings/security).data.get('testMode', false) == true;
-    }
-
-    function testSignupDomainOk(email) {
-      let domain = get(/databases/$(database)/documents/settings/security).data.get('testSignupDomain', '');
-      let parts = email.split('@');
-      return domain == '' || (parts.size() == 2 && parts[1] == domain);
-    }
-
+    // Security settings: readable by signed-in users so the app knows whether
+    // 2FA is required. From the app it can only be switched ON for everyone
+    // (from a session that used 2FA); `npm run 2fa:relax` is the emergency off.
     match /settings/{docId} {
-      allow get: if docId == 'security';
-      allow list: if signedIn();
+      allow read: if signedIn();
       allow create, update: if docId == 'security'
         && isSuperAdmin()
-        && request.resource.data.keys().hasOnly(['require2fa', 'testMode', 'testSignupDomain', 'updatedBy', 'updatedAt'])
-        && request.resource.data.get('testMode', false) is bool
-        && request.resource.data.get('testSignupDomain', '') is string
-        && request.resource.data.get('testSignupDomain', '').size() <= 100
-        // require2fa may only stay as it was, or be switched ON from a 2FA session
-        && (request.resource.data.get('require2fa', false)
-              == (resource == null ? false : resource.data.get('require2fa', false))
-          || (request.resource.data.get('require2fa', false) == true && has2fa()));
+        && request.resource.data.keys().hasOnly(['require2fa', 'updatedBy', 'updatedAt'])
+        && request.resource.data.require2fa == true
+        && has2fa();
       allow delete: if false;
     }
 

@@ -1,10 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { MultiFactorResolver } from 'firebase/auth';
-import { Lock, Loader2, Eye, EyeOff, Mail, ArrowLeft, Smartphone, ShieldCheck, UserPlus, User, IdCard, Building, FlaskConical } from 'lucide-react';
+import { Lock, Loader2, Eye, EyeOff, Mail, ArrowLeft, Smartphone, ShieldCheck } from 'lucide-react';
 import { signIn, completeMfaSignIn, sendPasswordReset, takeLoginNotice } from '../utils/authService';
 import { useEmulator } from '../utils/firebaseSync';
-import { getTestModeSettings, registerTestAccount, TEST_SIGNUP_ROLES, type TestModeSettings } from '../utils/testMode';
-import type { SystemUserRole } from '../types';
 import {
   AuthFrame,
   AuthHeading,
@@ -23,44 +21,7 @@ interface LockScreenViewProps {
 }
 
 export const LockScreenView: React.FC<LockScreenViewProps> = ({ onAuthenticated, notice }) => {
-  const [mode, setMode] = useState<'login' | 'code' | 'reset' | 'signup'>('login');
-
-  // Test Mode: testers may create their own account
-  const [testSettings, setTestSettings] = useState<TestModeSettings | null>(null);
-  const [suName, setSuName] = useState('');
-  const [suEmail, setSuEmail] = useState('');
-  const [suStaff, setSuStaff] = useState('');
-  const [suDept, setSuDept] = useState('');
-  const [suRole, setSuRole] = useState<SystemUserRole>('SCHEDULER');
-  const [suPassword, setSuPassword] = useState('');
-  const [suPassword2, setSuPassword2] = useState('');
-  const [suBusy, setSuBusy] = useState(false);
-  const [suError, setSuError] = useState('');
-
-  useEffect(() => {
-    getTestModeSettings().then(setTestSettings);
-  }, []);
-
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (suBusy || !testSettings) return;
-    setSuError('');
-    if (suPassword !== suPassword2) {
-      setSuError('The two passwords don\u2019t match.');
-      return;
-    }
-    setSuBusy(true);
-    try {
-      await registerTestAccount(
-        { name: suName, email: suEmail, password: suPassword, staffNumber: suStaff, department: suDept, role: suRole },
-        testSettings
-      );
-      onAuthenticated?.();
-    } catch (err) {
-      setSuError((err as Error).message);
-      setSuBusy(false);
-    }
-  };
+  const [mode, setMode] = useState<'login' | 'code' | 'reset'>('login');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -256,136 +217,9 @@ export const LockScreenView: React.FC<LockScreenViewProps> = ({ onAuthenticated,
             </button>
           </form>
 
-          {testSettings?.testMode ? (
-            <div className="bg-amber-950/40 border border-amber-800/70 rounded-2xl p-4 text-center space-y-2">
-              <p className="text-[11px] text-amber-300 font-mono flex items-center justify-center gap-1.5">
-                <FlaskConical className="w-3.5 h-3.5" />
-                <span>Test Mode is on — testers can create their own account.</span>
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setSuEmail(email);
-                  setSuError('');
-                  setMode('signup');
-                }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs font-mono rounded-xl transition-colors cursor-pointer"
-              >
-                <UserPlus className="w-3.5 h-3.5 text-[#F37C1C]" />
-                <span>Create a test account</span>
-              </button>
-            </div>
-          ) : (
-            <p className="text-center text-[11px] text-slate-500 font-mono">
-              Don't have an account? Contact your system administrator to be added.
-            </p>
-          )}
-        </>
-      )}
-
-      {mode === 'signup' && testSettings && (
-        <>
-          <AuthHeading
-            badge="Test Mode"
-            icon={<FlaskConical className="w-3.5 h-3.5" />}
-            title="Create a test account"
-            subtitle={
-              testSettings.testSignupDomain
-                ? `For testing Crew Control. Use your @${testSettings.testSignupDomain} email address.`
-                : 'For testing Crew Control.'
-            }
-          />
-
-          <form onSubmit={handleSignup} className="bg-slate-900/80 border border-slate-800 rounded-2xl shadow-lg p-6 space-y-3">
-            {suError && <AuthAlert kind="error">{suError}</AuthAlert>}
-
-            {(
-              [
-                ['Full name', suName, setSuName, User, 'text', 'name', 'e.g. Mwila Tembo'],
-                ['Email', suEmail, setSuEmail, Mail, 'email', 'username', testSettings.testSignupDomain ? `you@${testSettings.testSignupDomain}` : 'you@example.com'],
-                ['Staff / Employee ID (optional)', suStaff, setSuStaff, IdCard, 'text', 'off', 'e.g. ZA-1234'],
-                ['Department (optional)', suDept, setSuDept, Building, 'text', 'organization-title', 'e.g. OCC'],
-              ] as const
-            ).map(([label, value, set, Icon, type, auto, placeholder]) => (
-              <div key={label} className="space-y-1.5">
-                <label className={authLabelClass}>{label}</label>
-                <div className="relative">
-                  <Icon className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                  <input
-                    type={type}
-                    autoComplete={auto}
-                    value={value}
-                    onChange={(e) => (set as (v: string) => void)(e.target.value)}
-                    placeholder={placeholder}
-                    disabled={suBusy}
-                    className={authInputClass}
-                  />
-                </div>
-              </div>
-            ))}
-
-            <div className="space-y-1.5">
-              <label className={authLabelClass}>Role to test</label>
-              <select
-                value={suRole}
-                onChange={(e) => setSuRole(e.target.value as SystemUserRole)}
-                disabled={suBusy}
-                className="w-full px-3 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-[#F37C1C] font-mono"
-              >
-                {TEST_SIGNUP_ROLES.map((r) => (
-                  <option key={r.role} value={r.role}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[10px] text-slate-500 font-mono">Admin roles are given by a Super Admin, not here.</p>
-            </div>
-
-            {(
-              [
-                ['Password (8+ characters, letters and a number)', suPassword, setSuPassword],
-                ['Repeat password', suPassword2, setSuPassword2],
-              ] as const
-            ).map(([label, value, set]) => (
-              <div key={label} className="space-y-1.5">
-                <label className={authLabelClass}>{label}</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={value}
-                    onChange={(e) => (set as (v: string) => void)(e.target.value)}
-                    disabled={suBusy}
-                    className={authInputClass}
-                  />
-                </div>
-              </div>
-            ))}
-
-            <button
-              type="submit"
-              disabled={suBusy || !suName || !suEmail || !suPassword || !suPassword2}
-              className={authPrimaryButtonClass}
-            >
-              {suBusy ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Creating account...</span>
-                </>
-              ) : (
-                <>
-                  <UserPlus className="w-4 h-4" />
-                  <span>Create account &amp; sign in</span>
-                </>
-              )}
-            </button>
-
-            <button type="button" onClick={backToLogin} className={authSecondaryButtonClass}>
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back to Sign In</span>
-            </button>
-          </form>
+          <p className="text-center text-[11px] text-slate-500 font-mono">
+            Don't have an account? Contact your system administrator to be added.
+          </p>
         </>
       )}
 

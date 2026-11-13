@@ -362,11 +362,7 @@ export async function enableRequire2fa(byEmail: string): Promise<void> {
     );
   }
   try {
-    await setDoc(
-      doc(db, 'settings', 'security'),
-      { require2fa: true, updatedBy: byEmail, updatedAt: serverTimestamp() },
-      { merge: true } // keep the Test Mode settings
-    );
+    await setDoc(doc(db, 'settings', 'security'), { require2fa: true, updatedBy: byEmail, updatedAt: serverTimestamp() });
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
