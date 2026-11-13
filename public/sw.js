@@ -1,11 +1,12 @@
 // Zambia Airways Crew Control PWA - Background Sync & Offline Service Worker
-const CACHE_VERSION = 'za-crew-cache-v3';
+const CACHE_VERSION = 'za-crew-cache-v4';
 const ROSTER_DATA_CACHE = 'za-roster-data-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/app-icon.jpg',
+  '/favicon.png',
+  '/favicon.ico',
   '/apple-touch-icon.png',
   '/pwa-192.png',
   '/pwa-512.png',
@@ -210,7 +211,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Handle static images and icons offline
-  if (request.destination === 'image' || url.includes('/app-icon.jpg') || url.includes('/manifest.json')) {
+  if (request.destination === 'image' || url.includes('/favicon') || url.includes('/manifest.json')) {
     event.respondWith(
       fetch(request).catch(() => caches.match(request))
     );
