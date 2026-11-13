@@ -34,7 +34,21 @@ import {
   RosterAcknowledgment,
 } from '../types';
 
-import firebaseConfigData from '../../firebase-applet-config.json';
+import { buildAuditEntry, diffRecords, getAuditActor, newAuditId, type AuditArea } from './auditTrail';
+import testFirebaseConfig from '../../firebase-applet-config.json';
+import liveFirebaseConfig from '../../firebase-applet-config.live.json';
+
+/**
+ * Two separate Firebase projects (docs/ENVIRONMENTS.md):
+ *   test - firebase-applet-config.json      (npm run dev / build / deploy)
+ *   live - firebase-applet-config.live.json (npm run build:live / go-live)
+ * Each has its own database, users and audit log.
+ */
+export const APP_ENV: 'test' | 'live' = import.meta.env.MODE === 'live' ? 'live' : 'test';
+if (APP_ENV === 'live' && !liveFirebaseConfig.projectId) {
+  throw new Error('Live build without a live Firebase project: fill in firebase-applet-config.live.json.');
+}
+const firebaseConfigData = APP_ENV === 'live' ? liveFirebaseConfig : testFirebaseConfig;
 
 export const firebaseWebConfig = {
   apiKey: firebaseConfigData.apiKey,
@@ -180,6 +194,257 @@ function getCache(collectionName: string): Map<string, string> {
   return cache;
 }
 
+/** JSON with object keys sorted, so the same record always compares equal. */
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.keys(v as Record<string, unknown>).sort().reduce<Record<string, unknown>>((o, k) => {
+          o[k] = (v as Record<string, unknown>)[k];
+          return o;
+        }, {})
+      : v
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT TRAIL (docs/AUDIT_TRAIL.md). Each change to these collections is
+// written in the same batch as an audit entry with its before/after values,
+// and the record carries `_auditId` = that entry's id. firestore.rules refuse
+// the change if the entry isn't saved with it. A delete is logged under the
+// id `<record's _auditId>-del`, which the rules can check without a field.
+// ---------------------------------------------------------------------------
+
+/** Field on audited records pointing at the audit entry of their last change. */
+export const AUDIT_ID_FIELD = '_auditId';
+
+interface AuditedCollection {
+  area: AuditArea;
+  noun: string;
+  label: (r: Record<string, unknown>) => string;
+  subjects: (r: Record<string, unknown>) => string[];
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v));
+
+function flightLabel(flightId: string): string {
+  const cached = getCache('flights').get(flightId);
+  if (!cached) return flightId;
+  try {
+    const f = JSON.parse(cached) as Record<string, unknown>;
+    return [str(f.flightNumber), str(f.date)].filter(Boolean).join(' ') || flightId;
+  } catch {
+    return flightId;
+  }
+}
+
+function crewLabel(crewId: string): string {
+  const cached = getCache('crew').get(crewId);
+  if (!cached) return crewId;
+  try {
+    const c = JSON.parse(cached) as Record<string, unknown>;
+    return [str(c.name), str(c.staffNumber) && `(${str(c.staffNumber)})`].filter(Boolean).join(' ') || crewId;
+  } catch {
+    return crewId;
+  }
+}
+
+function assignmentCrewIds(r: Record<string, unknown>): string[] {
+  const ids = [str(r.captainId), str(r.firstOfficerId), ...((Array.isArray(r.cabinCrewIds) ? r.cabinCrewIds : []) as unknown[]).map(str)];
+  return ids.filter(Boolean);
+}
+
+/** Crew and flight ids shown as names in before/after values (auditors can't read ids). */
+const CREW_ID_FIELDS = new Set(['captainId', 'firstOfficerId', 'crewId']);
+const CREW_ID_LIST_FIELDS = new Set(['cabinCrewIds', 'acknowledgedCrewIds']);
+
+export function readableForAudit(r: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!r) return r;
+  const out: Record<string, unknown> = { ...r };
+  for (const [k, v] of Object.entries(r)) {
+    if (CREW_ID_FIELDS.has(k) && typeof v === 'string' && v) out[k] = crewLabel(v);
+    else if (CREW_ID_LIST_FIELDS.has(k) && Array.isArray(v)) out[k] = v.map((id) => crewLabel(str(id))).join(', ');
+    else if (k === 'flightId' && typeof v === 'string' && v) out[k] = flightLabel(v);
+  }
+  return out;
+}
+
+export const AUDITED_COLLECTIONS: Record<string, AuditedCollection> = {
+  crew: {
+    area: 'crew',
+    noun: 'crew record',
+    label: (r) => [str(r.name), str(r.staffNumber) && `(${str(r.staffNumber)})`].filter(Boolean).join(' '),
+    subjects: (r) => [`crew:${str(r.id)}`],
+  },
+  flights: {
+    area: 'flights',
+    noun: 'flight',
+    label: (r) => [str(r.flightNumber), str(r.date)].filter(Boolean).join(' '),
+    subjects: (r) => [`flight:${str(r.id)}`, ...(str(r.registration) ? [`aircraft:${str(r.registration)}`] : [])],
+  },
+  assignments: {
+    area: 'assignments',
+    noun: 'crew assignment',
+    label: (r) => `Crew for ${flightLabel(str(r.flightId))}`,
+    subjects: (r) => [`assignment:${str(r.id)}`, `flight:${str(r.flightId)}`, ...assignmentCrewIds(r).map((id) => `crew:${id}`)],
+  },
+  leave: {
+    area: 'leave',
+    noun: 'leave/training record',
+    label: (r) => `${str(r.type)} ${str(r.startDate)}–${str(r.endDate)} · ${crewLabel(str(r.crewId))}`,
+    subjects: (r) => [`leave:${str(r.id)}`, `crew:${str(r.crewId)}`],
+  },
+  fleet: {
+    area: 'fleet',
+    noun: 'aircraft',
+    label: (r) => str(r.registration),
+    subjects: (r) => [`aircraft:${str(r.registration)}`],
+  },
+  acknowledgments: {
+    area: 'acknowledgments',
+    noun: 'roster acknowledgement',
+    label: (r) => `${str(r.crewName) || crewLabel(str(r.crewId))} · roster ${str(r.rosterPeriod)}`,
+    subjects: (r) => [`crew:${str(r.crewId)}`],
+  },
+  config: {
+    area: 'rules',
+    noun: 'setting',
+    label: (r) => (str(r.id) === 'legalityRules' ? 'Legality rules (FTL)' : str(r.id)),
+    subjects: (r) => [`config:${str(r.id)}`],
+  },
+};
+
+/** Last known `_auditId` of each record (from the server or our own writes). */
+const auditIdCache = new Map<string, Map<string, string>>();
+
+function getAuditIds(collectionName: string): Map<string, string> {
+  let m = auditIdCache.get(collectionName);
+  if (!m) {
+    m = new Map();
+    auditIdCache.set(collectionName, m);
+  }
+  return m;
+}
+
+/** Removes `_auditId` (remembering it) so app state and diffs never see it. */
+function takeAuditId<T extends Record<string, unknown>>(collectionName: string, id: string, data: T): T {
+  if (data && AUDIT_ID_FIELD in data) {
+    const auditId = data[AUDIT_ID_FIELD];
+    if (typeof auditId === 'string' && auditId) getAuditIds(collectionName).set(id, auditId);
+    const rest = { ...data };
+    delete rest[AUDIT_ID_FIELD];
+    return rest;
+  }
+  return data;
+}
+
+/** The audit id the rules expect for deleting this record. */
+export function deleteAuditId(collectionName: string, recordId: string, currentAuditId?: string): string {
+  return `${currentAuditId || `legacy-${collectionName}-${recordId}`}-del`;
+}
+
+/** Record writes per batch: each needs one rules lookup of its audit entry (20 per batch max). */
+const AUDITED_PAIRS_PER_BATCH = 6;
+
+type SyncOp =
+  | { type: 'set'; id: string; data: Record<string, unknown> }
+  | { type: 'delete'; id: string };
+
+interface PlannedWrite {
+  ops: Array<{ type: 'set' | 'delete'; collection: string; id: string; data?: Record<string, unknown> }>;
+  /** Applied to the caches once the batch is committed */
+  done: () => void;
+}
+
+function planAuditedOp(collectionName: string, op: SyncOp, beforeJson: string | undefined): PlannedWrite | null {
+  const spec = AUDITED_COLLECTIONS[collectionName];
+  const actor = getAuditActor();
+  if (!spec || !actor) return null;
+  const before = beforeJson ? (JSON.parse(beforeJson) as Record<string, unknown>) : null;
+  const after = op.type === 'set' ? op.data : null;
+  const record = (after || before || { id: op.id }) as Record<string, unknown>;
+  const diff = diffRecords(readableForAudit(before), readableForAudit(after));
+  const subjects = [...new Set([...(before ? spec.subjects(before) : []), ...(after ? spec.subjects(after) : [])])];
+  const label = spec.label(record) || op.id;
+  const action = op.type === 'delete' ? `Deleted ${spec.noun}` : before ? `Updated ${spec.noun}` : `Created ${spec.noun}`;
+  const auditId = op.type === 'delete' ? deleteAuditId(collectionName, op.id, getAuditIds(collectionName).get(op.id)) : newAuditId();
+  const entry = buildAuditEntry(
+    {
+      area: spec.area,
+      action,
+      details:
+        op.type === 'delete'
+          ? `${label} deleted.`
+          : before
+            ? `Changed: ${diff.changedFields.join(', ') || '(no visible fields)'}.`
+            : `${label} added.`,
+      severity: op.type === 'delete' ? 'WARNING' : 'INFO',
+      targetId: op.id,
+      targetLabel: label,
+      subjects,
+      changedFields: diff.changedFields,
+      before: diff.before,
+      after: diff.after,
+    },
+    actor
+  );
+  const ops: PlannedWrite['ops'] = [{ type: 'set', collection: 'auditLogs', id: auditId, data: entry }];
+  if (op.type === 'set') ops.push({ type: 'set', collection: collectionName, id: op.id, data: { ...op.data, [AUDIT_ID_FIELD]: auditId } });
+  else ops.push({ type: 'delete', collection: collectionName, id: op.id });
+  return {
+    ops,
+    done: () => {
+      const cache = getCache(collectionName);
+      if (op.type === 'set') {
+        cache.set(op.id, stableStringify(op.data));
+        getAuditIds(collectionName).set(op.id, auditId);
+      } else {
+        cache.delete(op.id);
+        getAuditIds(collectionName).delete(op.id);
+      }
+    },
+  };
+}
+
+function logBatchError(collectionName: string, err: unknown) {
+  const errorObj = err as { code?: string };
+  if (errorObj?.code === 'resource-exhausted') {
+    console.warn(`[FirebaseSync] Write stream busy for ${collectionName}, will retry on next change.`);
+  } else if (errorObj?.code === 'unavailable') {
+    console.warn(`[FirebaseSync] Network unavailable for ${collectionName}, buffered in cache.`);
+  } else {
+    console.error(`[FirebaseSync] Error syncing ${collectionName}:`, err);
+  }
+}
+
+async function writeAudited(collectionName: string, ops: SyncOp[]): Promise<void> {
+  const beforeCache = getCache(collectionName);
+  for (let i = 0; i < ops.length; i += AUDITED_PAIRS_PER_BATCH) {
+    const planned = ops
+      .slice(i, i + AUDITED_PAIRS_PER_BATCH)
+      .map((op) => planAuditedOp(collectionName, op, beforeCache.get(op.id)))
+      .filter((p): p is PlannedWrite => p !== null);
+    if (planned.length === 0) {
+      console.warn(`[FirebaseSync] Not saving ${collectionName}: no signed-in account to record in the audit trail.`);
+      return;
+    }
+    const batch = writeBatch(db);
+    for (const p of planned) {
+      for (const o of p.ops) {
+        const ref = doc(db, o.collection, o.id);
+        if (o.type === 'set') batch.set(ref, o.data!, { merge: false });
+        else batch.delete(ref);
+      }
+    }
+    try {
+      await batch.commit();
+    } catch (err) {
+      logBatchError(collectionName, err);
+      return;
+    }
+    planned.forEach((p) => p.done());
+  }
+}
+
 async function diffAndWriteCollection(
   collectionName: string,
   items: Array<Record<string, unknown>>,
@@ -190,11 +455,12 @@ async function diffAndWriteCollection(
   const incomingIds = new Set<string>();
 
   const toWrite: Array<{ id: string; data: Record<string, unknown> }> = [];
-  for (const item of clean) {
-    const itemId = item?.[idField] as string | undefined;
-    if (!item || !itemId) continue;
+  for (const raw of clean) {
+    const itemId = raw?.[idField] as string | undefined;
+    if (!raw || !itemId) continue;
+    const item = takeAuditId(collectionName, itemId, raw);
     incomingIds.add(itemId);
-    const serialized = JSON.stringify(item);
+    const serialized = stableStringify(item);
     if (cache.get(itemId) !== serialized) {
       toWrite.push({ id: itemId, data: item });
     }
@@ -211,10 +477,15 @@ async function diffAndWriteCollection(
 
   if (toWrite.length === 0 && toDelete.length === 0) return;
 
-  const ops = [
+  const ops: SyncOp[] = [
     ...toWrite.map((w) => ({ type: 'set' as const, id: w.id, data: w.data })),
     ...toDelete.map((id) => ({ type: 'delete' as const, id })),
   ];
+
+  if (AUDITED_COLLECTIONS[collectionName]) {
+    await writeAudited(collectionName, ops);
+    return;
+  }
 
   for (let i = 0; i < ops.length; i += 400) {
     const chunk = ops.slice(i, i + 400);
@@ -230,20 +501,21 @@ async function diffAndWriteCollection(
     try {
       await batch.commit();
     } catch (err: unknown) {
-      const errorObj = err as { code?: string };
-      if (errorObj?.code === 'resource-exhausted') {
-        console.warn(`[FirebaseSync] Write stream busy for ${collectionName}, will retry on next change.`);
-      } else if (errorObj?.code === 'unavailable') {
-        console.warn(`[FirebaseSync] Network unavailable for ${collectionName}, buffered in cache.`);
-      } else {
-        console.error(`[FirebaseSync] Error syncing ${collectionName}:`, err);
-      }
+      logBatchError(collectionName, err);
       return;
     }
   }
 
-  for (const w of toWrite) cache.set(w.id, JSON.stringify(w.data));
+  for (const w of toWrite) cache.set(w.id, stableStringify(w.data));
   for (const id of toDelete) cache.delete(id);
+}
+
+/** One audited document write (e.g. config/legalityRules), outside the array sync. */
+export async function writeAuditedDoc(collectionName: string, id: string, data: Record<string, unknown>): Promise<void> {
+  const clean = sanitizeForFirestore({ ...data, id });
+  const cache = getCache(collectionName);
+  if (cache.get(id) === stableStringify(clean)) return;
+  await writeAudited(collectionName, [{ type: 'set', id, data: clean }]);
 }
 
 const writeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -325,9 +597,10 @@ function subscribeCollection<T>(
       const cache = getCache(collectionName);
       const items: T[] = [];
       snap.forEach((docSnap) => {
-        const data = { ...docSnap.data(), [idField]: docSnap.id } as T;
+        const raw = { ...docSnap.data(), [idField]: docSnap.id } as Record<string, unknown>;
+        const data = takeAuditId(collectionName, docSnap.id, raw) as T;
         items.push(data);
-        cache.set(docSnap.id, JSON.stringify(data));
+        cache.set(docSnap.id, stableStringify(sanitizeForFirestore(data)));
       });
       onUpdate?.(items);
     },
@@ -361,7 +634,7 @@ export async function syncRulesToFirebase(rules: LegalityRules) {
   if (!isSignedIn()) return;
   const cleanRules = sanitizeForFirestore(rules);
   try {
-    await setDoc(doc(db, 'config', 'legalityRules'), { rules: cleanRules, updatedAt: new Date().toISOString() });
+    await writeAuditedDoc('config', 'legalityRules', { rules: cleanRules });
   } catch (err) {
     console.error('[FirebaseSync] Error syncing rules:', err);
   }
@@ -377,8 +650,12 @@ export async function syncUsersToFirebase(_users: SystemUser[]): Promise<void> {
   return Promise.resolve();
 }
 
-export async function syncAuditLogsToFirebase(auditLogs: AuditLog[]) {
-  return queueCollectionWrite('auditLogs', auditLogs as unknown as Array<Record<string, unknown>>, 600);
+/**
+ * Audit entries are written one at a time by auditTrail.ts (logAudit) and with
+ * each data change; the old "sync the whole log array" path is gone.
+ */
+export async function syncAuditLogsToFirebase(_auditLogs: AuditLog[]): Promise<void> {
+  return;
 }
 
 export async function syncAcknowledgmentsToFirebase(acknowledgments: RosterAcknowledgment[]) {
@@ -393,15 +670,21 @@ export async function syncNotificationQueueToFirebase(queue: Array<Record<string
   return queueCollectionWrite('notificationQueue', queue);
 }
 
+/**
+ * Deletes all operational records. Each deletion is recorded in the audit
+ * trail like any other (the audit log itself can never be cleared).
+ */
 export async function clearAllFirebaseCollections() {
-  const collections = ['crew', 'flights', 'assignments', 'leave', 'fleet', 'auditLogs', 'acknowledgments'];
+  const collections: Array<[string, string]> = [['crew', 'id'], ['flights', 'id'], ['assignments', 'id'], ['leave', 'id'], ['fleet', 'registration'], ['acknowledgments', 'id']];
   try {
-    for (const name of collections) {
+    for (const [name, idField] of collections) {
       const snap = await getDocs(collection(db, name));
-      const batch = writeBatch(db);
-      snap.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
-      lastSyncedCache.delete(name);
+      const cache = getCache(name);
+      snap.forEach((d) => {
+        const data = takeAuditId(name, d.id, { ...d.data(), [idField]: d.id } as Record<string, unknown>);
+        cache.set(d.id, stableStringify(sanitizeForFirestore(data)));
+      });
+      await diffAndWriteCollection(name, [], idField);
     }
   } catch (err) {
     console.warn('[FirebaseSync] Error clearing Firestore collections:', err);
@@ -426,7 +709,6 @@ export async function pushAllDataToFirebase(data: {
     syncFleetToFirebase(data.fleet),
     syncRulesToFirebase(data.rules),
     syncUsersToFirebase(data.systemUsers),
-    syncAuditLogsToFirebase(data.auditLogs),
   ]);
 }
 
@@ -518,7 +800,9 @@ export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks, scope?: Re
   } else {
     unsubCrew = subscribeCollection<CrewMember>('crew', callbacks.onCrewUpdate, updateConnectionStatus, handleSnapshotError);
     unsubLeave = subscribeCollection<LeaveTrainingRecord>('leave', callbacks.onLeaveUpdate, updateConnectionStatus, handleSnapshotError);
-    unsubAudit = subscribeCollection<AuditLog>('auditLogs', callbacks.onAuditLogsUpdate, updateConnectionStatus, handleSnapshotError, 'id', AUDIT_LOG_LIVE_LIMIT);
+    // The audit log is no longer streamed to every screen: the Audit Log page
+    // loads the period it needs (auditTrail.ts), which also saves free-tier reads.
+    callbacks.onAuditLogsUpdate?.([]);
     unsubAcks = subscribeCollection<RosterAcknowledgment>('acknowledgments', callbacks.onAcknowledgmentsUpdate, updateConnectionStatus, handleSnapshotError);
   }
 
@@ -527,7 +811,8 @@ export function subscribeToRealtimeSync(callbacks: RealtimeCallbacks, scope?: Re
     (snap) => {
       updateConnectionStatus();
       if (snap.exists()) {
-        const data = snap.data();
+        const data = takeAuditId('config', snap.id, { ...snap.data(), id: snap.id } as Record<string, unknown>);
+        getCache('config').set(snap.id, stableStringify(sanitizeForFirestore(data)));
         if (data.rules) {
           callbacks.onRulesUpdate?.(data.rules as LegalityRules);
         }

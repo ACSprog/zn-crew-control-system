@@ -28,6 +28,7 @@ import {
   signOut,
 } from 'firebase/auth';
 import { deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { diffRecords, logAudit } from './auditTrail';
 import { db, firebaseWebConfig, useEmulator } from './firebaseSync';
 import { auth, tempPasswordFingerprint, type PendingAdminAction } from './authService';
 import { sendViaPowerAutomate, loadPowerAutomateConfig, isPowerAutomateConfigured } from './powerAutomateGateway';
@@ -171,6 +172,27 @@ async function sendWelcomeEmail(input: NewAccountInput, tempPassword: string, in
 }
 
 /** Creates the login (temporary password), the profile, and tells the user. */
+/** Records a change to a user account in the audit trail (area "users"). */
+function logUserChange(
+  action: string,
+  target: { id: string; name?: string; email?: string },
+  details: string,
+  before: Record<string, unknown> | null = null,
+  after: Record<string, unknown> | null = null,
+  severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO'
+): void {
+  const diff = before || after ? diffRecords(before, after) : { changedFields: [], before: {}, after: {} };
+  void logAudit({
+    area: 'users',
+    action,
+    details,
+    severity,
+    targetId: target.id,
+    targetLabel: [target.name, target.email && `<${target.email}>`].filter(Boolean).join(' '),
+    ...diff,
+  });
+}
+
 export async function addAccount(input: NewAccountInput, invitedBy: string): Promise<AddAccountResult> {
   const email = input.email.trim().toLowerCase();
   if (!email.includes('@')) throw new Error('Enter a valid email address.');
@@ -213,6 +235,9 @@ export async function addAccount(input: NewAccountInput, invitedBy: string): Pro
       `${friendlyAccountError(e)} (The login ${email} was created but has no Crew Control access yet. UID: ${uid})`
     );
   }
+  logUserChange('Created user account', { id: uid, name: input.name.trim(), email }, `New ${input.role} account; temporary password issued.`, null, {
+    name: input.name.trim(), email, staffNumber: input.staffNumber.trim(), role: input.role, department: input.department, base: input.base, status: 'ACTIVE',
+  });
 
   const welcome = await sendWelcomeEmail({ ...input, email }, tempPassword, invitedBy).catch((e) => ({
     sent: false as const,
@@ -258,6 +283,16 @@ export async function updateAccount(
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  const superAdmin = target.role === 'SUPER_ADMIN';
+  logUserChange(
+    'Updated user account',
+    target,
+    superAdmin ? 'Profile details changed (Super Admin role changes need a second Super Admin).' : 'Profile, role or permissions changed.',
+    { name: target.name, staffNumber: target.staffNumber, department: target.department, base: target.base,
+      ...(superAdmin ? {} : { role: target.role, permissions: target.permissions }) },
+    { ...profile, ...(superAdmin ? {} : { role: changes.role, permissions: changes.permissions }) },
+    !superAdmin && changes.role !== target.role ? 'WARNING' : 'INFO'
+  );
 }
 
 /** Block (access stops immediately, user stays listed) or unblock. */
@@ -267,6 +302,8 @@ export async function setAccountBlocked(target: SystemUser, blocked: boolean): P
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange(blocked ? 'Blocked user account' : 'Unblocked user account', target, blocked ? 'Access stopped.' : 'Access restored.',
+    { status: target.status || 'ACTIVE' }, { status: blocked ? 'INACTIVE' : 'ACTIVE' }, blocked ? 'WARNING' : 'INFO');
 }
 
 /** Super Admin: start ('on') or stop ('off') two-step sign-in for one person. */
@@ -281,6 +318,9 @@ export async function setAccountTwoFactor(target: SystemUser, mode: 'on' | 'off'
     }
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange(mode === 'on' ? 'Started 2FA for user' : 'Stopped 2FA for user', target,
+    mode === 'on' ? 'Two-step sign-in now required for this person.' : 'Two-step sign-in no longer required for this person.',
+    { twoFactor: (target as { twoFactor?: string }).twoFactor ?? '(follows everyone setting)' }, { twoFactor: mode }, 'WARNING');
 }
 
 /** Removes all access (the login itself stays; deleting it needs a server). */
@@ -290,6 +330,8 @@ export async function removeAccount(target: SystemUser): Promise<void> {
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange('Removed user account', target, 'All access removed (the login itself remains in Firebase Authentication).',
+    { role: target.role, status: target.status || 'ACTIVE' }, null, 'WARNING');
 }
 
 /** Emails the user a password-reset link; also unlocks them after 5 wrong passwords. Returns true if it was locked. */
@@ -311,6 +353,8 @@ export async function sendAccountPasswordReset(email: string): Promise<boolean> 
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange('Sent password reset email', { id: clean, email: clean }, wasLocked ? 'Reset email sent and the locked account unlocked.' : 'Reset email sent.',
+    null, null, wasLocked ? 'WARNING' : 'INFO');
   return wasLocked;
 }
 
@@ -366,6 +410,8 @@ export async function enableRequire2fa(byEmail: string): Promise<void> {
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  void logAudit({ area: 'security', action: 'Required 2FA for everyone', details: 'Two-step sign-in is now required for all accounts.',
+    severity: 'CRITICAL', targetId: 'settings/security', targetLabel: 'Security settings', changedFields: ['require2fa'], before: { require2fa: false }, after: { require2fa: true } });
 }
 
 /** The command the project owner runs to remove someone's lost authenticator (free plan). */
@@ -415,6 +461,7 @@ export async function cancelSuperAdminAction(target: SystemUser): Promise<void> 
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange('Withdrew Super Admin change request', target, 'Request withdrawn.');
 }
 
 /** The Super Admin concerned: approve or decline a request about their own account. */
@@ -425,8 +472,13 @@ export async function answerMyPendingAction(pa: PendingAdminAction, approve: boo
   try {
     if (!approve) {
       await updateDoc(ref, { pendingAction: deleteField() });
+      logUserChange('Declined Super Admin change', { id: uid, email: auth.currentUser?.email || '' }, `Declined: ${describePendingAction(pa, 'their')} (asked by ${pa.requestedByEmail}).`);
       return;
     }
+    // Logged first: after removing or blocking yourself you can no longer write to the log
+    await logAudit({ area: 'users', action: 'Approved Super Admin change', severity: 'CRITICAL', targetId: uid,
+      targetLabel: auth.currentUser?.email || '', details: `Approved: ${describePendingAction(pa, 'their')} (asked by ${pa.requestedByEmail}).`,
+      ...(pa.type === 'role' ? { changedFields: ['role'], before: { role: 'SUPER_ADMIN' }, after: { role: pa.newRole || '' } } : {}) });
     const batch = writeBatch(db);
     if (pa.type === 'remove') batch.delete(ref);
     else if (pa.type === 'block') batch.update(ref, { status: 'INACTIVE', pendingAction: deleteField() });
@@ -455,4 +507,6 @@ export async function updateOwnProfile(
   } catch (e) {
     throw new Error(friendlyAccountError(e));
   }
+  logUserChange('Updated own profile', { id: uid, name: changes.name.trim(), email: auth.currentUser?.email || '' }, 'Changed their own display details.', null, {
+    name: changes.name.trim(), department: changes.department, base: changes.base, ...(changes.staffNumber !== undefined ? { staffNumber: changes.staffNumber.trim() } : {}) });
 }

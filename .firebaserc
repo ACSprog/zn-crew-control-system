@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "zn-crew-contol-system"
+    "default": "zn-crew-control-system-test",
+    "test": "zn-crew-control-system-test"
   }
 }

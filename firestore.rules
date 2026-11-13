@@ -114,19 +114,48 @@ service cloud.firestore {
       return isCrewSelf() && request.auth.token.email == resource.data.email;
     }
 
+    // ---------------------------------------------------------------------
+    // Audit trail (docs/AUDIT_TRAIL.md, ISO/IEC 27001:2022 A.8.15-A.8.17).
+    // A change to an operational record is only accepted if the SAME batch
+    // saves its audit entry: the record's _auditId names an entry, written
+    // now (server time), by this person, about this record. A delete is
+    // logged as "<record's _auditId>-del".
+    // ---------------------------------------------------------------------
+
+    function auditPath(auditId) {
+      return /databases/$(database)/documents/auditLogs/$(auditId);
+    }
+
+    function auditEntryFor(auditId, area, id) {
+      let e = getAfter(auditPath(auditId)).data;
+      return e.targetId == id && e.area == area && e.at == request.time && e.actorUid == request.auth.uid;
+    }
+
+    function auditedWrite(area, id) {
+      let auditId = request.resource.data.get('_auditId', '');
+      return auditId is string && auditId.size() > 0 && auditEntryFor(auditId, area, id);
+    }
+
+    function auditedDelete(area, coll, id) {
+      return auditEntryFor(resource.data.get('_auditId', 'legacy-' + coll + '-' + id) + '-del', area, id);
+    }
+
     match /crew/{id} {
       allow read: if canReadAllOperationalData() || isOwnCrewRecord();
-      allow write: if canManageRoster();
+      allow create, update: if canManageRoster() && auditedWrite('crew', id);
+      allow delete: if canManageRoster() && auditedDelete('crew', 'crew', id);
     }
 
     match /flights/{id} {
       allow read: if isActiveUser();
-      allow write: if canManageRoster();
+      allow create, update: if canManageRoster() && auditedWrite('flights', id);
+      allow delete: if canManageRoster() && auditedDelete('flights', 'flights', id);
     }
 
     match /assignments/{id} {
       allow read: if isActiveUser();
-      allow write: if canManageRoster();
+      allow create, update: if canManageRoster() && auditedWrite('assignments', id);
+      allow delete: if canManageRoster() && auditedDelete('assignments', 'assignments', id);
     }
 
     // Crew may read only records stamped with their own sign-in email.
@@ -137,12 +166,14 @@ service cloud.firestore {
 
     match /leave/{id} {
       allow read: if canReadAllOperationalData() || isOwnStamped(resource.data);
-      allow write: if canManageRoster();
+      allow create, update: if canManageRoster() && auditedWrite('leave', id);
+      allow delete: if canManageRoster() && auditedDelete('leave', 'leave', id);
     }
 
     match /fleet/{id} {
       allow read: if isActiveUser();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && auditedWrite('fleet', id);
+      allow delete: if isAdmin() && auditedDelete('fleet', 'fleet', id);
     }
 
     // ---------------------------------------------------------------------
@@ -345,9 +376,64 @@ service cloud.firestore {
           && resource.data.get('locked', false) == false);
     }
 
+    // The audit log: nobody can edit or delete an entry, Super Admins included.
+    // Super Admins and Auditors read the whole log; roster managers read the
+    // history of operational records (ops == true) only.
+    function canReadFullAuditLog() {
+      return isActiveUser() && role() in ['SUPER_ADMIN', 'AUDITOR'];
+    }
+
+    function opsArea(area) {
+      return area in ['crew', 'flights', 'assignments', 'leave', 'fleet', 'acknowledgments', 'rules'];
+    }
+
+    function validAuditEntry(d) {
+      return d.keys().hasOnly(['v', 'at', 'area', 'action', 'details', 'severity', 'outcome', 'ops', 'targetId',
+          'targetLabel', 'subjects', 'changedFields', 'before', 'after', 'actorUid', 'actorEmail', 'actorName',
+          'actorRole', 'device', 'clientTime', 'periodFrom', 'periodTo'])
+        && d.keys().hasAll(['v', 'at', 'area', 'action', 'outcome', 'ops', 'actorUid', 'actorEmail', 'actorRole'])
+        && d.v == 3
+        && d.at == request.time
+        && d.area in ['sign-in', 'crew', 'flights', 'assignments', 'leave', 'fleet', 'acknowledgments', 'rules',
+          'users', 'security', 'notifications', 'exports', 'audit-review', 'system']
+        && d.ops == opsArea(d.area)
+        && d.action is string && d.action.size() > 0 && d.action.size() <= 120
+        && d.get('details', '') is string && d.get('details', '').size() <= 4000
+        && d.get('severity', 'INFO') in ['INFO', 'WARNING', 'CRITICAL']
+        && d.outcome in ['success', 'failure']
+        && d.get('targetId', '') is string && d.get('targetId', '').size() <= 200
+        && d.get('targetLabel', '') is string && d.get('targetLabel', '').size() <= 200
+        && d.get('subjects', []) is list && d.get('subjects', []).size() <= 20
+        && d.get('changedFields', []) is list && d.get('changedFields', []).size() <= 100
+        && d.get('before', {}) is map && d.get('after', {}) is map
+        && d.get('device', '') is string && d.get('device', '').size() <= 300
+        && d.get('clientTime', '') is string && d.get('clientTime', '').size() <= 40
+        && d.get('actorName', '') is string && d.get('actorName', '').size() <= 200
+        && d.actorEmail is string && d.actorEmail.size() <= 320
+        && d.actorUid is string && d.actorRole is string;
+    }
+
+    // Wrong passwords / authenticator codes and refused sign-ins happen before
+    // a full sign-in, so these few failure entries need no active account.
+    function signInFailureEntry(d) {
+      return d.area == 'sign-in' && d.outcome == 'failure'
+        && d.action in ['Sign-in failed', 'Account locked', 'Authenticator code rejected', 'Sign-in refused']
+        && d.actorRole == '' && d.get('actorName', '') == ''
+        && d.get('subjects', []).size() == 0
+        && d.get('before', {}).size() == 0 && d.get('after', {}).size() == 0
+        && ((request.auth == null && d.actorUid == '')
+          || (request.auth != null && d.actorUid == request.auth.uid));
+    }
+
     match /auditLogs/{id} {
-      allow read: if canReadAllOperationalData();
-      allow create: if isActiveUser();
+      allow read: if canReadFullAuditLog()
+        || (canManageRoster() && resource.data.get('ops', false) == true);
+      allow create: if validAuditEntry(request.resource.data) && (
+          (isActiveUser()
+            && request.resource.data.actorUid == request.auth.uid
+            && request.resource.data.actorRole == role()
+            && request.resource.data.actorEmail == request.auth.token.get('email', ''))
+          || signInFailureEntry(request.resource.data));
       allow update, delete: if false;
     }
 
@@ -355,15 +441,17 @@ service cloud.firestore {
       allow read: if canReadAllOperationalData() || isOwnStamped(resource.data);
       // Crew acknowledge only their own roster (crewId must be their own crew
       // record); OCC may record on their behalf.
-      allow create, update: if canManageRoster() ||
+      allow create, update: if (canManageRoster() ||
         (isOwnStamped(request.resource.data) &&
-         get(/databases/$(database)/documents/crew/$(request.resource.data.crewId)).data.email == request.auth.token.email);
-      allow delete: if canManageRoster();
+         get(/databases/$(database)/documents/crew/$(request.resource.data.crewId)).data.email == request.auth.token.email))
+        && auditedWrite('acknowledgments', id);
+      allow delete: if canManageRoster() && auditedDelete('acknowledgments', 'acknowledgments', id);
     }
 
     match /config/{id} {
       allow read: if isActiveUser();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && auditedWrite('rules', id);
+      allow delete: if isAdmin() && auditedDelete('rules', 'config', id);
     }
 
     // In-app notifications. targetEmail == null is a broadcast to everyone.

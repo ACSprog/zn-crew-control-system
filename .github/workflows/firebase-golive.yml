@@ -1,0 +1,58 @@
+# LIVE environment: publishes master to the LIVE project (the project ID in
+# firebase-applet-config.live.json). Runs only when started by hand, after the
+# change has been checked on the test site:
+#   GitHub -> Actions -> "Go live" -> Run workflow -> type GO LIVE
+# Secret: FIREBASE_SERVICE_ACCOUNT_LIVE = a key of the LIVE project.
+name: Go live
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type GO LIVE to publish master to the live system'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-golive
+  cancel-in-progress: false
+
+jobs:
+  live:
+    if: github.event.inputs.confirm == 'GO LIVE'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Live project ID
+        id: live
+        run: |
+          ID=$(node -p "require('./firebase-applet-config.live.json').projectId")
+          if [ -z "$ID" ]; then echo "firebase-applet-config.live.json has no project yet"; exit 1; fi
+          echo "project=$ID" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build:live
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LIVE }}
+      - name: Deploy Firestore rules (live)
+        run: npx --yes firebase-tools@latest deploy --only firestore:rules --project ${{ steps.live.outputs.project }} --non-interactive
+
+      - name: Deploy website (live)
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LIVE }}
+          projectId: ${{ steps.live.outputs.project }}
+          channelId: live
