@@ -168,15 +168,25 @@ launch.
        changed later.**
      - Start in **production mode**. Our rules replace the defaults on the first deploy.
    - **Build → Hosting → Get started**. Click through; no CLI is needed.
-2. Go to **Project settings → Service accounts → Generate new private key**. This downloads
-   a JSON file. Treat it like a password and never commit it.
-3. In GitHub, open **ACSprog/zn-crew-control-system → Settings → Secrets and variables →
-   Actions → New repository secret**:
-   - Name: `FIREBASE_SERVICE_ACCOUNT`
-   - Value: paste the **entire** JSON file contents.
+2. Connect GitHub to Firebase with one command, run on your PC from the project folder:
+   ```
+   npm run github:deploy
+   ```
+   You need to be signed in to the Firebase CLI (`npx firebase-tools login`) and the GitHub
+   CLI (`gh auth login`; install it with `winget install --id GitHub.cli` on Windows).
+   The script:
+   - creates a deploy-only account, `github-deploy@<project>.iam.gserviceaccount.com`, with
+     Hosting and security-rules permissions only;
+   - makes a key and saves it straight into the repo secret `FIREBASE_SERVICE_ACCOUNT`. The
+     key is never written to disk or shown on screen.
+   Run it again any time to rotate the key; it deletes the old ones.
+3. *(Manual alternative)* **Project settings → Service accounts → Generate new private key**,
+   then in GitHub go to **Settings → Secrets and variables → Actions → New repository
+   secret**, name it `FIREBASE_SERVICE_ACCOUNT` and paste the whole JSON file. Delete the
+   file afterwards.
 4. Open the pull request → **Actions** tab → **Deploy preview (staging)** → **Re-run**. You
    can also just push any commit. The staging URL appears as a PR comment.
-5. Create your first admin user with the same JSON key:
+5. Brand-new project only: create the first admin user with a downloaded JSON key (step 3):
    ```
    GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json npm run create-user -- \
      --email=you@example.com --password=TempPass123! --name="Your Name" --role=SUPER_ADMIN
