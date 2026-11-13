@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet, AuditLog } from './types';
 import { currentPeriod } from './utils/dates';
+import { defaultPermissionsForRole } from './utils/permissions';
 import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
   getCrew,
@@ -82,40 +83,6 @@ import { NotificationsView } from './views/NotificationsView';
 import { MobileBottomNav } from './components/MobileBottomNav';
 import { MobileDrawer } from './components/MobileDrawer';
 import { MobileAppInstallModal } from './components/MobileAppInstallModal';
-
-// Sensible default UI permissions per role, used only to drive what
-// buttons/sections render — NOT a security boundary. Real enforcement
-// happens in Firestore security rules and the server's ID-token check,
-// both of which read the `role` custom claim directly, never this object.
-function defaultPermissionsForRole(role: string) {
-  const base = {
-    canEditRoster: false,
-    canGenerateRoster: false,
-    canManageCrew: false,
-    canEditSettings: false,
-    canResetData: false,
-    canOverrideLegality: false,
-    canManageUsers: false,
-    canExportAudit: false,
-    canApproveRosterEdits: false,
-    canViewFullPii: false,
-    canManageSecurity: false,
-  };
-  switch (role) {
-    case 'SUPER_ADMIN':
-    case 'ADMIN':
-      return Object.fromEntries(Object.keys(base).map((k) => [k, true])) as typeof base;
-    case 'SCHEDULER':
-    case 'OCC_CONTROLLER':
-      return { ...base, canEditRoster: true, canGenerateRoster: true, canManageCrew: true, canExportAudit: true, canViewFullPii: true, canOverrideLegality: role === 'OCC_CONTROLLER', canApproveRosterEdits: role === 'OCC_CONTROLLER' };
-    case 'CHIEF_PILOT':
-      return { ...base, canOverrideLegality: true, canApproveRosterEdits: true, canViewFullPii: true, canExportAudit: true };
-    case 'AUDITOR':
-      return { ...base, canExportAudit: true };
-    default:
-      return base;
-  }
-}
 
 function avatarInitialsFor(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
