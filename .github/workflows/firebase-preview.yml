@@ -1,6 +1,6 @@
 # Staging: every pull request gets its own temporary Firebase Hosting URL
 # (a "preview channel"), posted as a comment on the PR. Free on the Spark plan.
-# Previews hang off the test site; the test and main addresses are NOT touched.
+# The live site is NOT touched.
 #
 # One-time setup: add the repo secret FIREBASE_SERVICE_ACCOUNT
 # (see docs/FREE_TIER.md → "Hosting online before going live").
@@ -45,6 +45,5 @@ jobs:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           projectId: zn-crew-contol-system
-          target: test
           channelId: staging
           expires: 30d

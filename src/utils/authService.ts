@@ -301,20 +301,7 @@ const VALID_ROLES: SystemUserRole[] = [
 
 export const BLOCKED_MESSAGE = 'Your account has been blocked. Contact a System Admin if you think this is a mistake.';
 
-/**
- * While a tester creates their own account (Test Mode), the login exists a
- * moment before its profile. The access check waits for that to finish so it
- * doesn't wrongly report "no Crew Control account".
- */
-let registrationGate: Promise<void> | null = null;
-export function holdAccessCheckUntil(done: Promise<void>): void {
-  registrationGate = done.finally(() => {
-    registrationGate = null;
-  });
-}
-
 export async function verifyUserAccess(user: User): Promise<UserAccess> {
-  if (registrationGate) await registrationGate.catch(() => undefined);
   const denied = (deniedReason: string): UserAccess => ({
     allowed: false,
     deniedReason,

@@ -32,7 +32,6 @@ import {
   Terminal,
   ShieldOff,
   Smartphone,
-  FlaskConical,
   Ban,
   CircleCheck,
   Loader2,
@@ -62,7 +61,6 @@ import {
   type AddAccountResult,
 } from '../utils/accounts';
 import type { PendingAdminAction } from '../utils/authService';
-import { DEFAULT_TEST_DOMAIN, getTestModeSettings, removeAllTestAccounts, setTestMode } from '../utils/testMode';
 
 /** Account fields stored on users/{uid} that aren't part of the SystemUser type. */
 type AccountRow = SystemUser & {
@@ -70,7 +68,6 @@ type AccountRow = SystemUser & {
   twoFactorEnrolled?: boolean;
   mustChangePassword?: boolean;
   pendingAction?: PendingAdminAction;
-  testAccount?: boolean;
 };
 interface UserAccessViewProps {
   users: SystemUser[];
@@ -168,66 +165,6 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
   }, [emailsKey, iManageUsers]);
 
   const lockOf = (u: SystemUser) => locks[(u.email || '').toLowerCase()];
-
-  // ---- Test Mode (testers create their own accounts) ----
-  const [testModeOn, setTestModeOn] = useState(false);
-  const [testDomain, setTestDomain] = useState(DEFAULT_TEST_DOMAIN);
-  const [testBusy, setTestBusy] = useState(false);
-  const [testMsg, setTestMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
-  const testAccounts = users.filter((u) => (u as AccountRow).testAccount === true);
-  useEffect(() => {
-    getTestModeSettings().then((t) => {
-      setTestModeOn(t.testMode);
-      setTestDomain(t.testSignupDomain);
-    });
-  }, []);
-
-  const handleTestMode = async (on: boolean) => {
-    if (
-      on &&
-      !window.confirm(
-        `Turn on Test Mode?\n\nAnyone with ${testDomain ? `an @${testDomain}` : 'ANY'} email address can then create their own Crew Control account (not an admin role) from the sign-in page.`
-      )
-    )
-      return;
-    setTestBusy(true);
-    setTestMsg(null);
-    try {
-      await setTestMode(on, testDomain, currentUser.email);
-      setTestModeOn(on);
-      setTestMsg({
-        kind: 'ok',
-        text: on
-          ? `Test Mode is on. Testers can use "Create a test account" on the sign-in page.`
-          : 'Test Mode is off. No new test accounts can be created; existing ones still work until removed.',
-      });
-      notify(
-        on ? 'Test Mode switched on.' : 'Test Mode switched off.',
-        on ? 'Test Mode On' : 'Test Mode Off',
-        `${currentUser.name} switched Test Mode ${on ? `on (sign-up domain: ${testDomain || 'any'})` : 'off'}.`,
-        'WARNING'
-      );
-    } catch (e) {
-      setTestMsg({ kind: 'error', text: (e as Error).message });
-    } finally {
-      setTestBusy(false);
-    }
-  };
-
-  const handleRemoveTestAccounts = async () => {
-    if (!window.confirm(`Remove Crew Control access for all ${testAccounts.length} test account(s)?`)) return;
-    setTestBusy(true);
-    setTestMsg(null);
-    try {
-      const n = await removeAllTestAccounts(users as AccountRow[], currentUser.id);
-      setTestMsg({ kind: 'ok', text: `Removed access for ${n} test account(s).` });
-      notify(`Removed ${n} test account(s).`, 'Test Accounts Removed', `${currentUser.name} removed ${n} self-registered test account(s).`, 'WARNING');
-    } catch (e) {
-      setTestMsg({ kind: 'error', text: (e as Error).message });
-    } finally {
-      setTestBusy(false);
-    }
-  };
 
   const twoFactorBadge = (u: AccountRow) => {
     const required = u.twoFactor === 'on' || (require2faAll && u.twoFactor !== 'off');
@@ -781,81 +718,6 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
         </div>
       )}
 
-      {/* Test Mode (Super Admins) */}
-      {isSuperAdmin && (
-        <div
-          className={`p-4 rounded-xl border shadow-2xs flex flex-col gap-3 ${
-            testModeOn ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'
-          }`}
-        >
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#2E2C2B] text-[#F37C1C] flex items-center justify-center shrink-0">
-                <FlaskConical className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
-                  Test Mode — Testers Create Their Own Accounts
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
-                      testModeOn ? 'bg-amber-200 text-amber-900' : 'bg-slate-100 text-slate-500'
-                    }`}
-                  >
-                    {testModeOn ? 'ON' : 'OFF'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-0.5 max-w-2xl">
-                  While on, the sign-in page shows "Create a test account". Testers choose a non-admin role; their accounts get a
-                  TEST badge. Switch it off before going live and remove the test accounts.
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0 flex-wrap">
-              {!testModeOn && (
-                <div className="flex items-center gap-1 text-[11px] text-slate-600">
-                  <span className="font-bold">Allowed email domain:</span>
-                  <input
-                    value={testDomain}
-                    onChange={(e) => setTestDomain(e.target.value)}
-                    placeholder="any email"
-                    className="px-2 py-1.5 w-44 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#F37C1C]"
-                  />
-                </div>
-              )}
-              <button
-                onClick={() => handleTestMode(!testModeOn)}
-                disabled={testBusy}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-2 disabled:opacity-60 ${
-                  testModeOn ? 'bg-white border border-slate-300 hover:bg-slate-100 text-slate-800' : 'bg-[#2E2C2B] hover:bg-black text-white'
-                }`}
-              >
-                <FlaskConical className="w-3.5 h-3.5 text-[#F37C1C]" />
-                <span>{testModeOn ? 'Turn Test Mode Off' : 'Turn Test Mode On'}</span>
-              </button>
-              {testAccounts.length > 0 && (
-                <button
-                  onClick={handleRemoveTestAccounts}
-                  disabled={testBusy}
-                  className="px-3 py-2 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-50 text-red-700 transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-60"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove all {testAccounts.length} test account(s)</span>
-                </button>
-              )}
-            </div>
-          </div>
-          {testModeOn && (
-            <p className="text-[11px] text-amber-900">
-              Sign-up allowed for: <strong>{testDomain ? `@${testDomain}` : 'any email address'}</strong>. Test accounts so far:{' '}
-              <strong>{testAccounts.length}</strong>.
-            </p>
-          )}
-          {testMsg && (
-            <p className={`text-[11px] ${testMsg.kind === 'ok' ? 'text-emerald-700' : 'text-red-700'}`}>{testMsg.text}</p>
-          )}
-        </div>
-      )}
-
       {/* Active User Quick Switch Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -1017,9 +879,6 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
                         <div>
                           <div className="font-bold text-slate-900 flex items-center gap-1.5">
                             <span>{u.name}</span>
-                            {(u as AccountRow).testAccount && (
-                              <span className="text-[9px] bg-amber-500 text-white font-bold px-1.5 py-0.2 rounded">TEST</span>
-                            )}
                             {isSelectedCurrent && (
                               <span className="text-[9px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">YOU</span>
                             )}
