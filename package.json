@@ -17,7 +17,8 @@
     "setup": "bash scripts/setup-firebase.sh",
     "2fa:enable": "node scripts/security.mjs --enable",
     "2fa:relax": "node scripts/security.mjs --relax",
-    "reset-2fa": "node scripts/reset-2fa.mjs"
+    "reset-2fa": "node scripts/reset-2fa.mjs",
+    "deploy:grant": "node scripts/grant-deploy-roles.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
