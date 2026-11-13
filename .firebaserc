@@ -1,17 +1,5 @@
 {
   "projects": {
     "default": "zn-crew-contol-system"
-  },
-  "targets": {
-    "zn-crew-contol-system": {
-      "hosting": {
-        "test": [
-          "zn-crew-control-system-test"
-        ],
-        "live": [
-          "zn-crew-contol-system"
-        ]
-      }
-    }
   }
 }

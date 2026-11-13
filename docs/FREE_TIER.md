@@ -52,7 +52,7 @@ use `npm run paid:dev-server`.
    reading the `(default)` database. Only the security rules were going to the named one.
    If the named DB does hold data you need, copy it into `(default)` first, while billing
    is still on. A few cents of reads.
-2. Deploy the rules and the test site: `npm run deploy`.
+2. Deploy the rules and site to the `(default)` database: `npm run deploy`.
 3. Delete the Cloud Run service `za-crew-api` (Cloud Console → Cloud Run). Delete the named
    Firestore database.
 4. **Revoke the Gemini API key that was committed in `.env.example`.** It is still in git
@@ -145,23 +145,18 @@ licence before doing very large bulk roster publications.
 
 ## 5. Hosting online before going live (staging)
 
-There are two addresses in the same Firebase project (both free on Spark):
+GitHub Actions deploys automatically:
 
-| Address | What it is | How it gets updated |
-|---|---|---|
-| **Test site**: `https://zn-crew-control-system-test.web.app` | Where you develop and test. Anyone with the link can open it. | After merging a PR: `npm run publish-test` on your PC (pulls `master`, builds, publishes). Also automatic on merge once the GitHub secret is set (`npm run github:deploy`) |
-| **Main address**: `https://zn-crew-contol-system.web.app` | The real system after go-live | **Only** `npm run go-live`, or GitHub → Actions → **Go live** → type `GO LIVE` |
+- **Every pull request** builds the app and publishes it to a Firebase Hosting **preview
+  channel**. This is a private-ish test URL like
+  `https://zn-crew-contol-system--staging-xxxx.web.app`, and the bot posts it as a comment
+  on the PR. It expires after 30 days, and the live site is not touched.
+- **Merging into `master`** publishes the live site at `https://zn-crew-contol-system.web.app`.
+- Both also deploy `firestore.rules`.
 
-If the test name was taken, `npm run setup` picks another and stores it in `.firebaserc`
-(targets → hosting → test).
-
-- **Every pull request** also gets a temporary preview link (`…-test--staging-xxxx.web.app`),
-  posted as a PR comment. It expires after 30 days.
-- **Keep the main address offline until launch** with `npm run live:off`. `npm run go-live`
-  brings it back.
-- Both addresses share **one** Firestore database, **one** set of users and one set of
-  security rules. Test data will still be there at go-live, so clear it first (and turn
-  Test Mode off).
+The preview and the live site share **one** Firestore database and **one** set of users.
+Test data you enter on staging will still be there after go-live, so clear it before
+launch.
 
 ### One-time setup
 
@@ -173,25 +168,15 @@ If the test name was taken, `npm run setup` picks another and stores it in `.fir
        changed later.**
      - Start in **production mode**. Our rules replace the defaults on the first deploy.
    - **Build → Hosting → Get started**. Click through; no CLI is needed.
-2. Connect GitHub to Firebase with one command, run on your PC from the project folder:
-   ```
-   npm run github:deploy
-   ```
-   You need to be signed in to the Firebase CLI (`npx firebase-tools login`) and the GitHub
-   CLI (`gh auth login`; install it with `winget install --id GitHub.cli` on Windows).
-   The script:
-   - creates a deploy-only account, `github-deploy@<project>.iam.gserviceaccount.com`, with
-     Hosting and security-rules permissions only;
-   - makes a key and saves it straight into the repo secret `FIREBASE_SERVICE_ACCOUNT`. The
-     key is never written to disk or shown on screen.
-   Run it again any time to rotate the key; it deletes the old ones.
-3. *(Manual alternative)* **Project settings → Service accounts → Generate new private key**,
-   then in GitHub go to **Settings → Secrets and variables → Actions → New repository
-   secret**, name it `FIREBASE_SERVICE_ACCOUNT` and paste the whole JSON file. Delete the
-   file afterwards.
+2. Go to **Project settings → Service accounts → Generate new private key**. This downloads
+   a JSON file. Treat it like a password and never commit it.
+3. In GitHub, open **ACSprog/zn-crew-control-system → Settings → Secrets and variables →
+   Actions → New repository secret**:
+   - Name: `FIREBASE_SERVICE_ACCOUNT`
+   - Value: paste the **entire** JSON file contents.
 4. Open the pull request → **Actions** tab → **Deploy preview (staging)** → **Re-run**. You
    can also just push any commit. The staging URL appears as a PR comment.
-5. Brand-new project only: create the first admin user with a downloaded JSON key (step 3):
+5. Create your first admin user with the same JSON key:
    ```
    GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json npm run create-user -- \
      --email=you@example.com --password=TempPass123! --name="Your Name" --role=SUPER_ADMIN

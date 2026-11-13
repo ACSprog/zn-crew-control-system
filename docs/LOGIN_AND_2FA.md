@@ -16,7 +16,7 @@ the work.
 
 ## One-time setup (project owner)
 
-1. **Publish the new security rules** by running `npm run setup` (or merge into master, and the test-site deploy does it).
+1. **Publish the new security rules** by running `npm run setup` (or merge, and the live deploy does it).
    - Existing accounts keep working. Their `users/{uid}` profile already holds their role.
    - `firebase deploy` checks the rules compile before publishing them.
 2. **Turn on authenticator-app 2FA** with `npm run 2fa:enable`.
