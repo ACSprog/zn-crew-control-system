@@ -438,13 +438,19 @@ export async function answerMyPendingAction(pa: PendingAdminAction, approve: boo
 }
 
 /** The signed-in user editing their own display details (not role, status, email or staff number). */
-export async function updateOwnProfile(uid: string, changes: { name: string; department: string; base: string }): Promise<void> {
+export async function updateOwnProfile(
+  uid: string,
+  changes: { name: string; department: string; base: string; staffNumber?: string }
+): Promise<void> {
   try {
     await updateDoc(doc(db, 'users', uid), {
       name: changes.name.trim(),
       department: changes.department,
       base: changes.base,
       avatarInitials: initials(changes.name),
+      // Staff accounts may set their own staff number; crew logins can't
+      // (the crew portal is matched on it). Enforced by firestore.rules.
+      ...(changes.staffNumber !== undefined ? { staffNumber: changes.staffNumber.trim() } : {}),
     });
   } catch (e) {
     throw new Error(friendlyAccountError(e));
