@@ -8,9 +8,11 @@
 # What it does (each step is skipped if already done, so it's safe to re-run):
 #   1. Signs you in to Firebase (opens your browser)
 #   2. Creates the Firestore (default) database in africa-south1
-#   3. Creates the Firebase Hosting site if it doesn't exist yet
+#   3. Creates the TEST Hosting site (e.g. zn-crew-control-system-test) and
+#      points the "test" deploy target at it
 #   4. Builds the app and deploys: Email/Password sign-in, Firestore rules,
-#      and the website  ->  https://<project>.web.app
+#      and the website to the TEST address only. The main address
+#      (https://<project>.web.app) is only changed by  npm run go-live
 #   5. (Optional) With a service-account key file: creates your SUPER_ADMIN
 #      user and stores the key as the GitHub secret for auto-deploys
 #
@@ -58,21 +60,47 @@ else
   ok "Created (default) database in $REGION"
 fi
 
-# ---------------------------------------------------------------- 3. hosting site
-bold "3/5  Hosting site"
-if $FB hosting:sites:list --project "$PROJECT_ID" --json 2>/dev/null | grep -q "sites/$PROJECT_ID\""; then
-  ok "Hosting site $PROJECT_ID exists"
+# ---------------------------------------------------------------- 3. hosting sites
+bold "3/5  Hosting sites (test address + main address)"
+SITES_JSON="$($FB hosting:sites:list --project "$PROJECT_ID" --json 2>/dev/null || true)"
+has_site() { grep -q "sites/$1\"" <<<"$SITES_JSON"; }
+
+if has_site "$PROJECT_ID"; then
+  ok "Main site $PROJECT_ID exists (not changed by this script)"
 else
-  $FB hosting:sites:create "$PROJECT_ID" --project "$PROJECT_ID" --non-interactive \
-    || warn "Could not create the site automatically. Open Firebase console -> Hosting -> Get started, then re-run."
+  $FB hosting:sites:create "$PROJECT_ID" --project "$PROJECT_ID" --non-interactive >/dev/null 2>&1 \
+    && ok "Created main site $PROJECT_ID" \
+    || warn "Main site $PROJECT_ID not created (open Firebase console -> Hosting -> Get started). Only needed for go-live."
+fi
+
+# Test site: the one in .firebaserc first, then fallbacks (site names are global)
+CURRENT_TEST="$(node -p "((JSON.parse(require('fs').readFileSync('.firebaserc','utf8')).targets||{})['$PROJECT_ID']||{}).hosting?.test?.[0]||''")"
+TEST_SITE=""
+for candidate in ${TEST_SITE_ID:-} "$CURRENT_TEST" zn-crew-control-system-test "$PROJECT_ID-test" zn-crew-control-test; do
+  [[ -z "$candidate" ]] && continue
+  if has_site "$candidate"; then TEST_SITE="$candidate"; ok "Test site $candidate exists"; break; fi
+  if $FB hosting:sites:create "$candidate" --project "$PROJECT_ID" --non-interactive >/dev/null 2>&1; then
+    TEST_SITE="$candidate"; ok "Created test site $candidate"; break
+  fi
+  warn "Site name $candidate is taken or not allowed, trying the next one"
+done
+[[ -n "$TEST_SITE" ]] || { echo "  ✘ Could not create a test site. Re-run with TEST_SITE_ID=some-unique-name"; exit 1; }
+
+if [[ "$TEST_SITE" != "$CURRENT_TEST" ]]; then
+  $FB target:clear hosting test --project "$PROJECT_ID" >/dev/null 2>&1 || true
+  $FB target:apply hosting test "$TEST_SITE" --project "$PROJECT_ID" >/dev/null
+  warn ".firebaserc now points the test target at $TEST_SITE. Commit and push it so GitHub deploys there too:"
+  echo "     git add .firebaserc && git commit -m \"Use test site $TEST_SITE\" && git push"
 fi
 
 # ---------------------------------------------------------------- 4. build + deploy
-bold "4/5  Build and deploy (sign-in provider, security rules, website)"
+bold "4/5  Build and deploy to the TEST address (sign-in provider, security rules, website)"
 npm ci
 npm run build
-$FB deploy --only auth,firestore:rules,hosting --project "$PROJECT_ID" --non-interactive
-ok "Live at https://$PROJECT_ID.web.app"
+$FB deploy --only auth,firestore:rules,hosting:test --project "$PROJECT_ID" --non-interactive
+ok "Test site online at https://$TEST_SITE.web.app (anyone with the link can open it)"
+echo "  The main address https://$PROJECT_ID.web.app was not changed."
+echo "  Want it offline until go-live?  npm run live:off      Go live later:  npm run go-live"
 
 # ---------------------------------------------------------------- 5. admin user + GitHub secret
 bold "5/5  First SUPER_ADMIN user and GitHub auto-deploy secret (optional)"
@@ -106,6 +134,6 @@ else
   echo "     Name: FIREBASE_SERVICE_ACCOUNT   Value: the whole contents of $KEY"
 fi
 
-bold "All done. Sign in at https://$PROJECT_ID.web.app with $ADMIN_EMAIL"
+bold "All done. Sign in at https://$TEST_SITE.web.app with $ADMIN_EMAIL"
 echo "  Next (recommended): turn on two-step sign-in with  npm run 2fa:enable"
 echo "  See docs/LOGIN_AND_2FA.md"

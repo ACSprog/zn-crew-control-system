@@ -1,6 +1,6 @@
 /**
- * One-time setup so GitHub deploys the app by itself (merge → live site,
- * pull request → staging preview).
+ * One-time setup so GitHub deploys the app by itself (merge → test site,
+ * pull request → staging preview; main address only via "Go live").
  *
  *   npm run github:deploy
  *
@@ -10,7 +10,7 @@
  *   3. Makes a new key and saves it straight into the GitHub repo secret
  *      FIREBASE_SERVICE_ACCOUNT. The key never touches your disk or screen.
  *   4. Deletes this account's older keys (so re-running rotates the key).
- *   5. Optionally starts the "Deploy live" workflow so you can see it work.
+ *   5. Optionally starts the "Deploy test site" workflow so you can see it work.
  *
  * Needs:  Firebase CLI login (npx firebase-tools login) — project owner
  *         GitHub CLI login (gh auth login)            — repo admin
@@ -222,13 +222,14 @@ async function main() {
   }
 
   console.log('\n\x1b[32mDone.\x1b[0m From now on:');
-  console.log('  • merging into master deploys the live site + security rules');
+  console.log('  • merging into master updates the TEST site + security rules');
   console.log('  • every pull request gets a staging preview link');
+  console.log('  • the main address changes only when you run "Go live" (Actions tab) or npm run go-live');
 
-  const run = args.yes ? 'n' : await ask('\nStart the "Deploy live" workflow now to check it works? (y/N) ');
+  const run = args.yes ? 'n' : await ask('\nStart the "Deploy test site" workflow now to check it works? (y/N) ');
   if (/^y(es)?$/i.test(run)) {
     try {
-      gh(['workflow', 'run', 'firebase-live.yml', '--repo', repo, '--ref', 'master']);
+      gh(['workflow', 'run', 'firebase-test.yml', '--repo', repo, '--ref', 'master']);
       ok(`Started. Watch it at https://github.com/${repo}/actions`);
     } catch (e) {
       console.log(`  Could not start it (${(e.stderr || e.message || '').toString().trim()}). Start it from the Actions tab.`);

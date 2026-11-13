@@ -1,11 +1,14 @@
-# Production: merging into master publishes the live site
-# (https://zn-crew-contol-system.web.app) and the Firestore security rules.
-name: Deploy live
+# Go live: publishes master to the MAIN address
+# (https://zn-crew-contol-system.web.app). Runs only when started by hand:
+# GitHub → Actions → "Go live" → Run workflow → type GO LIVE.
+name: Go live
 
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type GO LIVE to publish to the main address'
+        required: true
 
 permissions:
   contents: read
@@ -16,9 +19,12 @@ concurrency:
 
 jobs:
   live:
+    if: github.event.inputs.confirm == 'GO LIVE'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: master
 
       - uses: actions/setup-node@v4
         with:
@@ -34,10 +40,11 @@ jobs:
       - name: Deploy Firestore rules
         run: npx --yes firebase-tools@latest deploy --only firestore:rules --project zn-crew-contol-system --non-interactive
 
-      - name: Deploy hosting (live)
+      - name: Deploy to the main address
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           projectId: zn-crew-contol-system
+          target: live
           channelId: live

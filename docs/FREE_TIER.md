@@ -52,7 +52,7 @@ use `npm run paid:dev-server`.
    reading the `(default)` database. Only the security rules were going to the named one.
    If the named DB does hold data you need, copy it into `(default)` first, while billing
    is still on. A few cents of reads.
-2. Deploy the rules and site to the `(default)` database: `npm run deploy`.
+2. Deploy the rules and the test site: `npm run deploy`.
 3. Delete the Cloud Run service `za-crew-api` (Cloud Console → Cloud Run). Delete the named
    Firestore database.
 4. **Revoke the Gemini API key that was committed in `.env.example`.** It is still in git
@@ -145,18 +145,23 @@ licence before doing very large bulk roster publications.
 
 ## 5. Hosting online before going live (staging)
 
-GitHub Actions deploys automatically:
+There are two addresses in the same Firebase project (both free on Spark):
 
-- **Every pull request** builds the app and publishes it to a Firebase Hosting **preview
-  channel**. This is a private-ish test URL like
-  `https://zn-crew-contol-system--staging-xxxx.web.app`, and the bot posts it as a comment
-  on the PR. It expires after 30 days, and the live site is not touched.
-- **Merging into `master`** publishes the live site at `https://zn-crew-contol-system.web.app`.
-- Both also deploy `firestore.rules`.
+| Address | What it is | How it gets updated |
+|---|---|---|
+| **Test site**: `https://zn-crew-control-system-test.web.app` | Where you develop and test. Anyone with the link can open it. | After merging a PR: `npm run publish-test` on your PC (pulls `master`, builds, publishes). Also automatic on merge once the GitHub secret is set (`npm run github:deploy`) |
+| **Main address**: `https://zn-crew-contol-system.web.app` | The real system after go-live | **Only** `npm run go-live`, or GitHub → Actions → **Go live** → type `GO LIVE` |
 
-The preview and the live site share **one** Firestore database and **one** set of users.
-Test data you enter on staging will still be there after go-live, so clear it before
-launch.
+If the test name was taken, `npm run setup` picks another and stores it in `.firebaserc`
+(targets → hosting → test).
+
+- **Every pull request** also gets a temporary preview link (`…-test--staging-xxxx.web.app`),
+  posted as a PR comment. It expires after 30 days.
+- **Keep the main address offline until launch** with `npm run live:off`. `npm run go-live`
+  brings it back.
+- Both addresses share **one** Firestore database, **one** set of users and one set of
+  security rules. Test data will still be there at go-live, so clear it first (and turn
+  Test Mode off).
 
 ### One-time setup
 

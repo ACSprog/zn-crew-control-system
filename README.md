@@ -20,4 +20,4 @@ View your app in AI Studio: https://ai.studio/apps/33b74f1d-975c-491a-96d7-ace7a
 1. Install dependencies: `npm install`
 2. Start the local emulators: `npm run emulators`
 3. Run the app: `npm run dev`
-4. Deploy (hosting + Firestore rules only): `npm run deploy`
+4. Deploy to the test site (hosting + Firestore rules): `npm run deploy`. Publish to the main address at launch: `npm run go-live` (see docs/FREE_TIER.md §5)
