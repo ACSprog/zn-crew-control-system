@@ -10,7 +10,8 @@ monthly review procedure, and lists the limitations the organisation should decl
 |---|---|
 | System | Zambia Airways Crew Control & Operations (`https://zn-crew-contol-system.web.app`) |
 | Platform | Google Firebase: Cloud Firestore database, Firebase Authentication, Firebase Hosting (Spark plan) |
-| Log location | Firestore collection `auditLogs` (one document per entry) |
+| Log location | Firestore collection `auditLogs` (one document per entry) in the **live** project |
+| Test environment | A separate Firebase project with its own database, users and audit log (docs/ENVIRONMENTS.md). Test activity never reaches the live log. |
 | Where to view it | **Audit Log** page in the system |
 | Owner of this document | Super Admin / IT |
 
