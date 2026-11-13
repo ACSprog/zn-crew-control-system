@@ -35,7 +35,7 @@ import {
 } from '../types';
 
 import firebaseConfigData from '../../firebase-applet-config.json';
-import { buildAuditEntry, diffRecords, getAuditActor, newAuditId, type AuditArea } from './auditTrail';
+import { auditIsOn, buildAuditEntry, diffRecords, getAuditActor, newAuditId, type AuditArea } from './auditTrail';
 
 export const firebaseWebConfig = {
   apiKey: firebaseConfigData.apiKey,
@@ -469,7 +469,9 @@ async function diffAndWriteCollection(
     ...toDelete.map((id) => ({ type: 'delete' as const, id })),
   ];
 
-  if (AUDITED_COLLECTIONS[collectionName]) {
+  // Audited collections get an audit entry per change once the audit trail is
+  // on (go-live). While testing it is off and records are saved without one.
+  if (AUDITED_COLLECTIONS[collectionName] && (await auditIsOn())) {
     await writeAudited(collectionName, ops);
     return;
   }
@@ -502,6 +504,15 @@ export async function writeAuditedDoc(collectionName: string, id: string, data: 
   const clean = sanitizeForFirestore({ ...data, id });
   const cache = getCache(collectionName);
   if (cache.get(id) === stableStringify(clean)) return;
+  if (!(await auditIsOn())) {
+    try {
+      await setDoc(doc(db, collectionName, id), clean);
+      cache.set(id, stableStringify(clean));
+    } catch (err) {
+      logBatchError(collectionName, err);
+    }
+    return;
+  }
   await writeAudited(collectionName, [{ type: 'set', id, data: clean }]);
 }
 
