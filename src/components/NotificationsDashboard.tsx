@@ -1,5 +1,5 @@
 import type { NotificationItem } from '../types/notifications';
-import { sendNotificationsNow } from '../modules/notifications/autoDispatch';
+import { describeSendResult, sendNotificationsNow } from '../modules/notifications/autoDispatch';
 import { todayISO } from '../utils/dates';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
@@ -346,7 +346,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
     const res = await sendNotificationsNow(newItems, currentUser?.name || 'OCC Crew Controller', 'Roster broadcast (manual)');
     setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
-    showToast?.(`Roster notices: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''}.`);
+    showToast?.(describeSendResult('Roster notices', res));
     onLogAudit?.('ROSTER_BROADCAST_TRIGGER', `Sent roster notices to ${people} crew (${res.sent} sent, ${res.failed} failed)`, 'INFO');
   };
 
@@ -390,7 +390,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
     setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
     setDisruption({ open: false, flightId: '', type: 'Delay', reason: '' });
-    showToast?.(`Disruption alert: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''}.`);
+    showToast?.(describeSendResult('Disruption alert', res));
     onLogAudit?.(
       'DISRUPTION_ALERT_TRIGGER',
       `${disruption.type} alert for ${flight.flightNumber} ${flight.date} to ${affected.length} crew: ${disruption.reason.trim()}`,
@@ -502,7 +502,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
     setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
 
-    showToast?.(`Broadcast: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''} to ${targetRecipients.length} crew.`);
+    showToast?.(describeSendResult(`Broadcast to ${targetRecipients.length} crew`, res));
     onLogAudit?.('BULK_DISPATCH', `Broadcast "${composeData.subject.trim()}" to ${targetRecipients.length} crew (${res.sent} sent, ${res.failed} failed)`, 'INFO');
     setComposeData((c) => ({ ...c, subject: '', message: '' }));
     setActiveTab('logs');
@@ -589,7 +589,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
                   </span>
                 </h1>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Multi-channel operational notifications (WhatsApp Business, Email SMTP, In-App) with audit trails and delivery tracking.
+                  Crew notifications by email (Outlook via Power Automate) and in-app, with a shared delivery log and tracking.
                 </p>
               </div>
             </div>

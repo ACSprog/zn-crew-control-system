@@ -4,7 +4,7 @@ import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, Legali
 import { logAudit, type AuditArea } from './utils/auditTrail';
 import { APP_ENV, onSyncFailure } from './utils/firebaseSync';
 import { currentPeriod } from './utils/dates';
-import { autoNotifyFlightChange, autoNotifyLeaveUpdate, autoNotifyRosterChange } from './modules/notifications/autoDispatch';
+import { autoNotifyFlightChange, autoNotifyLeaveUpdate, autoNotifyRosterChange, describeSendResult } from './modules/notifications/autoDispatch';
 import {
   getCrew,
   saveCrew,
@@ -347,7 +347,7 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = (msg: string, ms = 4000) => {
+  const showToast = (msg: string, ms = Math.min(12000, Math.max(4000, msg.length * 60))) => {
     setToastMessage(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMessage(null), ms);
@@ -687,7 +687,7 @@ export function App() {
     saveFlights(updated);
     showToast(`Updated flight ${updatedFlight.flightNumber}`);
     autoNotifyFlightChange(previous, updatedFlight, assignments, crew, currentUser?.name || 'OCC')
-      .then((r) => !r.skipped && showToast(`Flight change sent to crew: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}.`))
+      .then((r) => !r.skipped && showToast(describeSendResult('Flight change sent to crew', r), 8000))
       .catch((err) => console.warn('[notify] flight change', err));
   };
 

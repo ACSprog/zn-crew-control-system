@@ -73,7 +73,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
 
   const handleOpenAddModal = () => {
     const defaultAircraft: AircraftType = 'Q400';
-    const matchingFleet = fleet.find(f => f.aircraftType === defaultAircraft);
+    const matchingFleet = fleet.find(f => f.aircraft === defaultAircraft);
     setEditingFlight(null);
     setFormData({
       flightNumber: '',
@@ -118,21 +118,6 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  const handleLoadOfficialCommercialSchedule = () => {
-    if (!onImportFlights) return;
-    const scheduleResult = parseFlightScheduleData(OFFICIAL_COMMERCIAL_FLIGHT_SCHEDULE_ROWS);
-    if (scheduleResult.flights.length > 0) {
-      const uniqueFlights = scheduleResult.flights.filter(
-        (nf) => !flights.some((f) => f.flightNumber === nf.flightNumber && f.date === nf.date && f.departure === nf.departure)
-      );
-      onImportFlights(uniqueFlights);
-      setUploadFeedback({
-        recordsAdded: uniqueFlights.length,
-        message: `Official Zambia Airways Commercial Schedule Loaded: Generated ${uniqueFlights.length} operational flight sectors from ${scheduleResult.seasonalPatterns.length} commercial route patterns (11-Apr-2026 to 04-Oct-2026).`,
-      });
-    }
   };
 
   const handleScheduleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -227,14 +212,6 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
               <span>Template CSV (16 Cols)</span>
             </button>
 
-            <button
-              onClick={handleLoadOfficialCommercialSchedule}
-              className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer font-mono"
-              title="Auto-load official Zambia Airways seasonal flight schedule (11-Apr to 04-Oct 2026)"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[#F37C1C]" />
-              <span>Load Commercial Schedule (Apr–Oct)</span>
-            </button>
 
             <button
               onClick={() => {
@@ -646,14 +623,6 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
                   />
                 </label>
 
-                <button
-                  type="button"
-                  onClick={handleLoadOfficialCommercialSchedule}
-                  className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                >
-                  <Sparkles className="w-4 h-4 text-[#F37C1C]" />
-                  <span>Load Official Schedule (Apr–Oct)</span>
-                </button>
               </div>
             </div>
 

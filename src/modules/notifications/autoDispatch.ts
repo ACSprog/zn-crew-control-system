@@ -25,6 +25,19 @@ export interface AutoDispatchResult {
   skipped: boolean;
   sent: number;
   failed: number;
+  /** Emails that could not be sent (the crew member still got the in-app message). */
+  emailFailed?: number;
+  /** Reason of the first email failure, e.g. "gateway not configured". */
+  emailError?: string;
+}
+
+/** One line for a toast: what went out and what didn't. */
+export function describeSendResult(label: string, r: AutoDispatchResult): string {
+  if (r.skipped) return `${label}: nothing to send.`;
+  const parts = [`${r.sent} sent`];
+  if (r.emailFailed) parts.push(`${r.emailFailed} email(s) NOT sent${r.emailError ? ` (${r.emailError.slice(0, 120)})` : ''}; in-app messages were delivered`);
+  if (r.failed) parts.push(`${r.failed} failed (see the log)`);
+  return `${label}: ${parts.join(', ')}.`;
 }
 
 async function dispatchItems(
@@ -49,11 +62,22 @@ export async function sendNotificationsNow(items: NotificationItem[], actor: str
   if (items.length === 0) return { skipped: true, sent: 0, failed: 0 };
   let sent = 0;
   let failed = 0;
+  let emailFailed = 0;
+  let emailError: string | undefined;
+  // If the batch already sends this person an in-app message, a failed email
+  // must not fall back to a second, identical in-app message.
+  const hasInApp = new Set(items.filter((i) => i.channel === 'IN_APP').map((i) => `${i.recipientId}|${i.subject}`));
+  const noFallback = { ...settings, retrySettings: { ...settings.retrySettings, enableFallbackChannel: false } };
   const done: NotificationQueueItem[] = [];
   for (const item of items) {
-    const result = await processNotificationWithRetryAndFallback(item, settings);
+    const dup = item.channel === 'EMAIL' && hasInApp.has(`${item.recipientId}|${item.subject}`);
+    const result = await processNotificationWithRetryAndFallback(item, dup ? noFallback : settings);
     const ok = result.status === 'SENT' || result.status === 'DELIVERED' || result.status === 'READ';
-    if (ok) sent++;
+    if (item.channel === 'EMAIL' && (!ok || result.fallbackAttempted)) {
+      emailFailed++;
+      emailError = emailError || (result.errorMessage || '').replace(/^Final Delivery Failure after \d+ attempts: /, '');
+      if (ok) sent++; // reached them in-app instead
+    } else if (ok) sent++;
     else failed++;
     const queueItem = {
       ...result,
@@ -76,7 +100,7 @@ export async function sendNotificationsNow(items: NotificationItem[], actor: str
   }
   // Show them on this computer's Notifications page as well.
   saveNotificationQueue([...done, ...getNotificationQueue()].slice(0, 500));
-  return { skipped: false, sent, failed };
+  return { skipped: false, sent, failed, emailFailed, emailError };
 }
 
 export function autoNotifyRosterPublished(
