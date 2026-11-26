@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet } from './types';
 import { logAudit, type AuditArea } from './utils/auditTrail';
+import { APP_ENV } from './utils/firebaseSync';
 import { currentPeriod } from './utils/dates';
 import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
@@ -498,6 +499,12 @@ export function App() {
   };
 
   const handleClearAllData = () => {
+    // Wiping every record is a test-environment tool only. In the live system
+    // records are deleted individually, each one recorded in the audit trail.
+    if (APP_ENV === 'live') {
+      showToast('Clearing all data is only available in the test environment.');
+      return;
+    }
     clearAllData();
     setCrewState([]);
     setFlightsState([]);
@@ -1033,7 +1040,7 @@ export function App() {
               onUpdateFlight={handleUpdateFlight}
               onDeleteFlight={handleDeleteFlight}
               onSaveFleet={handleSaveFleet}
-              onClearAllData={handleClearAllData}
+              onClearAllData={APP_ENV === 'live' ? undefined : handleClearAllData}
               onClearFlights={handleClearFlights}
               onImportFlights={handleImportFlightsWithAutoRoster}
             />
@@ -1104,7 +1111,7 @@ export function App() {
               onSaveAllData={handleSaveAllSystemData}
               onExportBackup={handleExportBackup}
               onImportBackup={handleImportBackup}
-              onClearAllData={handleClearAllData}
+              onClearAllData={APP_ENV === 'live' ? undefined : handleClearAllData}
               canResetData={currentUser.permissions.canResetData}
             />
           )}
@@ -1132,7 +1139,7 @@ export function App() {
                 showToast(`Imported ${imported.length} leave & training records from Excel/CSV!`);
               }}
               onImportFleet={handleImportFleet}
-              onClearAllData={handleClearAllData}
+              onClearAllData={APP_ENV === 'live' ? undefined : handleClearAllData}
               onRunAutoScheduler={handleQuickGenerateRoster}
             />
           )}

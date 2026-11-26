@@ -399,16 +399,6 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {onResetData && (
-          <button
-            onClick={onResetData}
-            disabled={currentUser && !currentUser.permissions.canResetData}
-            className="p-1.5 text-slate-400 hover:text-[#2E2C2B] hover:bg-slate-100 disabled:opacity-30 rounded-lg transition-colors cursor-pointer"
-            title={currentUser && !currentUser.permissions.canResetData ? 'Database reset restricted to Admin' : 'Reset Sample Data'}
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        )}
 
         {/* Real-time Notifications Bell */}
         <div className="relative">

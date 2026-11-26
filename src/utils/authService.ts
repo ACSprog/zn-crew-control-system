@@ -43,7 +43,7 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { getAuditActor, logAudit, logSignInFailure, setAuditActor } from './auditTrail';
+import { ensureAuditTrailStarted, getAuditActor, logAudit, logSignInFailure, setAuditActor } from './auditTrail';
 import { app, db, isDev, useEmulator } from './firebaseSync';
 import type { SystemUser, SystemUserRole } from '../types';
 
@@ -401,6 +401,7 @@ export async function verifyUserAccess(user: User): Promise<UserAccess> {
   delete profile.tempPasswordHash;
 
   setAuditActor({ uid: user.uid, email: user.email || '', name: String(data.name || user.displayName || ''), role });
+  await ensureAuditTrailStarted(role);
 
   return {
     allowed: true,
