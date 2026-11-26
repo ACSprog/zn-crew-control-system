@@ -368,7 +368,7 @@ export const UserAccessView: React.FC<UserAccessViewProps> = ({
     setAccountInfo(null);
     setFormName('');
     setFormEmail('');
-    setFormStaffNumber(`ZA-USR-${Math.floor(100 + Math.random() * 900)}`);
+    setFormStaffNumber('');
     setFormRole('OCC_CONTROLLER');
     setFormDepartment('Operations Control Center');
     setFormBase('LUN');
