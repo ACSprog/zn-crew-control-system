@@ -1,5 +1,7 @@
 import { sendViaPowerAutomate } from './powerAutomateGateway';
 import { sendInAppNotification } from './inAppNotifications';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { db, reportWriteFailure } from './firebaseSync';
 import {
   NotificationItem,
   NotificationChannel,
@@ -407,6 +409,7 @@ export function saveEmailTemplates(templates: EmailTemplate[]): void {
   } catch (err) {
     console.error('Failed to persist Email templates:', err);
   }
+  pushSharedNotificationConfig({ emailTemplates: templates });
 }
 
 export function loadWhatsAppConfig(): WhatsAppProviderConfig {
@@ -461,6 +464,7 @@ export function saveNotificationSettings(settings: NotificationSystemSettings): 
   } catch (err) {
     console.error('Failed to persist Notification settings:', err);
   }
+  pushSharedNotificationConfig({ settings });
 }
 
 export function loadCrewPreferences(crewId: string, crewMember?: CrewMember): CrewNotificationPreferences {
@@ -475,8 +479,8 @@ export function loadCrewPreferences(crewId: string, crewMember?: CrewMember): Cr
     crewId,
     companyEmail: crewMember?.companyEmail || crewMember?.email || `${crewMember?.name.toLowerCase().replace(/\s+/g, '.')}@zambiaairways.co.zm`,
     personalEmail: crewMember?.personalEmail || `${crewMember?.name.toLowerCase().replace(/\s+/g, '')}@gmail.com`,
-    mobileNumber: crewMember?.mobileNumber || crewMember?.phone || '+260971234567',
-    whatsAppNumber: crewMember?.whatsAppNumber || crewMember?.phone || '+260971234567',
+    mobileNumber: crewMember?.mobileNumber || crewMember?.phone,
+    whatsAppNumber: crewMember?.whatsAppNumber || crewMember?.phone,
     preferredChannel: crewMember?.preferredChannel || 'WHATSAPP',
     whatsAppOptIn: crewMember?.whatsAppOptIn ?? true,
     whatsAppConsentDate: '2026-08-01 08:00',
@@ -514,6 +518,47 @@ export function saveCrewPreferences(prefs: CrewNotificationPreferences): void {
   } catch (err) {
     console.error('Failed to persist crew preferences:', err);
   }
+  pushSharedNotificationConfig({ crewPreferences: { [prefs.crewId]: prefs } });
+}
+
+
+// ==========================================
+// SHARED NOTIFICATION CONFIG (all computers)
+// ==========================================
+// Automatic-notification switches, email templates and crew channel
+// preferences are kept in Firestore (integrations/notificationConfig) so a
+// change made on one computer applies to messages sent from every computer.
+// The local copies above are a cache of it, so the senders can stay synchronous.
+
+const SHARED_CONFIG_DOC = () => doc(db, 'integrations', 'notificationConfig');
+
+function pushSharedNotificationConfig(part: Record<string, unknown>): void {
+  setDoc(SHARED_CONFIG_DOC(), { ...JSON.parse(JSON.stringify(part)), updatedAt: new Date().toISOString() }, { merge: true }).catch(
+    (err) => reportWriteFailure('integrations', err)
+  );
+}
+
+/** Keeps this computer's copy in step with the shared one. Call after sign-in (OCC, schedulers, admins). */
+export function startSharedNotificationConfigSync(): () => void {
+  return onSnapshot(
+    SHARED_CONFIG_DOC(),
+    (snap) => {
+      const d = snap.data() as
+        | { settings?: NotificationSystemSettings; emailTemplates?: EmailTemplate[]; crewPreferences?: Record<string, CrewNotificationPreferences> }
+        | undefined;
+      if (!d) return;
+      try {
+        if (d.settings) localStorage.setItem(NOTIFICATION_STORAGE_KEYS.SETTINGS, JSON.stringify(d.settings));
+        if (Array.isArray(d.emailTemplates)) localStorage.setItem(NOTIFICATION_STORAGE_KEYS.EMAIL_TEMPLATES, JSON.stringify(d.emailTemplates));
+        Object.entries(d.crewPreferences || {}).forEach(([crewId, prefs]) =>
+          localStorage.setItem(`${NOTIFICATION_STORAGE_KEYS.PREFERENCES}_${crewId}`, JSON.stringify(prefs))
+        );
+      } catch (err) {
+        console.warn('[notifications] Could not store shared settings locally:', err);
+      }
+    },
+    (err) => console.warn('[notifications] Shared notification settings unavailable:', err)
+  );
 }
 
 // ==========================================
@@ -844,7 +889,7 @@ export function buildNotificationItemsForRosterPublish(
         recipientStaffNumber: member.staffNumber,
         recipientEmail: prefs.companyEmail || member.email,
         recipientPhone: member.phone,
-        recipientWhatsApp: member.whatsAppNumber || member.phone || '+260971234567',
+        recipientWhatsApp: member.whatsAppNumber || member.phone,
         channel: ch,
         notificationType: 'ROSTER_PUBLISHED',
         priority: 'NORMAL',
@@ -931,7 +976,7 @@ export function buildNotificationForRosterChange(
       recipientStaffNumber: crewMember.staffNumber,
       recipientEmail: prefs.companyEmail || crewMember.email,
       recipientPhone: crewMember.phone,
-      recipientWhatsApp: crewMember.whatsAppNumber || crewMember.phone || '+260971234567',
+      recipientWhatsApp: crewMember.whatsAppNumber || crewMember.phone,
       channel: ch,
       notificationType: 'ROSTER_CHANGE',
       priority: 'HIGH',
@@ -1013,7 +1058,7 @@ export function buildNotificationForDisruption(
         recipientStaffNumber: member.staffNumber,
         recipientEmail: prefs.companyEmail || member.email,
         recipientPhone: member.phone,
-        recipientWhatsApp: member.whatsAppNumber || member.phone || '+260971234567',
+        recipientWhatsApp: member.whatsAppNumber || member.phone,
         channel: ch,
         notificationType: 'DISRUPTION',
         priority: 'CRITICAL',

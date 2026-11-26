@@ -422,6 +422,11 @@ const syncFailureListeners = new Set<(f: SyncFailure) => void>();
 /** Re-sends the last data received from the database for a collection. */
 const redeliverLastSnapshot = new Map<string, () => void>();
 
+/** For other modules' writes (e.g. shared notification settings). */
+export function reportWriteFailure(collectionName: string, err: unknown): void {
+  logBatchError(collectionName, err);
+}
+
 export function onSyncFailure(listener: (f: SyncFailure) => void): () => void {
   syncFailureListeners.add(listener);
   return () => syncFailureListeners.delete(listener);

@@ -1,3 +1,6 @@
+import type { NotificationItem } from '../types/notifications';
+import { sendNotificationsNow } from '../modules/notifications/autoDispatch';
+import { todayISO } from '../utils/dates';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   NotificationChannel,
@@ -107,6 +110,22 @@ interface NotificationsDashboardProps {
   showToast?: (msg: string) => void;
 }
 
+/** What each automatic trigger does (shown under its switch). */
+const TRIGGER_HELP: Record<string, string> = {
+  onRosterPublished: 'Each crew member, when a roster is published.',
+  onRosterChange: 'Crew added to or removed from a published flight.',
+  onFlightChange: 'Assigned crew, when a published flight changes date, time, route, aircraft or status.',
+  onLeaveUpdate: 'The crew member, when leave or training is added or cancelled.',
+};
+
+/** Triggers this free-plan build can't run, and why. */
+const TRIGGER_UNAVAILABLE: Record<string, string> = {
+  onCrewReassignment: 'Included in "Roster Change".',
+  onDisruption: 'Sent by hand: use "Disruption Alert" above.',
+  onTrainingExpiryWarning: 'Not available: needs a server that runs on a schedule (not in the free plan). Use the Documents and Recency screens.',
+  onDutyReminder: 'Not available: needs a server that runs on a schedule (not in the free plan).',
+};
+
 export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
   crew,
   flights,
@@ -197,8 +216,8 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
     channels: ['EMAIL', 'IN_APP'],
     priority: 'HIGH',
     notificationType: 'GENERAL_BROADCAST',
-    subject: 'Zambia Airways Operations Advisory',
-    message: 'Operational Notice to all flight and cabin crew members: Please review updated standard reporting procedures.',
+    subject: '',
+    message: '',
     selectedCrewIds: [],
   });
 
@@ -313,92 +332,78 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
 
   // Quick Action: Publish Roster Broadcast
   const handleTriggerRosterPublishAlert = async () => {
-    if (crew.length === 0) {
-      showToast?.('No crew members available in database. Add crew first.');
+    // Only published duties from today onward: never draft rosters or past flights.
+    const today = todayISO();
+    const flightById = new Map(flights.map((f) => [f.id, f]));
+    const current = assignments.filter((a) => a.published && (flightById.get(a.flightId)?.date || '') >= today);
+    const newItems = buildNotificationItemsForRosterPublish(current, crew, flights, currentUser?.name || 'OCC Crew Controller');
+    if (newItems.length === 0) {
+      showToast?.('There are no published duties from today onward to send. Publish the roster first.');
       return;
     }
-    const newItems = buildNotificationItemsForRosterPublish(
-      assignments,
-      crew,
-      flights,
-      currentUser?.name || 'OCC Crew Controller'
-    );
-    
-    // Save to queue and create initial logs
-    const currentQueue = getNotificationQueue();
-    const formattedQueueItems: NotificationQueueItem[] = newItems.map((n) => ({
-      ...n,
-      channel: n.channel as NotificationChannel,
-      statusTimeline: [
-        {
-          status: n.status as NotificationStatus,
-          timestamp: new Date().toISOString(),
-          actorOrProvider: currentUser?.name || 'OCC Crew Controller',
-          note: 'Roster publication alert enqueued',
-        },
-      ],
-      retryHistory: [],
-    }));
-
-    const combinedQueue = [...formattedQueueItems, ...currentQueue];
-    saveNotificationQueue(combinedQueue);
-    setQueueState(combinedQueue);
-
-    for (const qItem of formattedQueueItems) {
-      await createNotificationLog(qItem);
-    }
+    const people = new Set(newItems.map((n) => n.recipientId)).size;
+    if (!window.confirm(`Send "roster published" notices for ${current.length} published duties to ${people} crew member(s)? (${newItems.length} messages)`)) return;
+    const res = await sendNotificationsNow(newItems, currentUser?.name || 'OCC Crew Controller', 'Roster broadcast (manual)');
+    setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
-
-    showToast?.(`Enqueued ${formattedQueueItems.length} roster publication notices.`);
-    onLogAudit?.('ROSTER_BROADCAST_TRIGGER', `Enqueued ${formattedQueueItems.length} roster notices`, 'INFO');
+    showToast?.(`Roster notices: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''}.`);
+    onLogAudit?.('ROSTER_BROADCAST_TRIGGER', `Sent roster notices to ${people} crew (${res.sent} sent, ${res.failed} failed)`, 'INFO');
   };
 
-  // Quick Action: Flight Disruption Alert
-  const handleTriggerDisruptionAlert = async () => {
-    if (flights.length === 0 || crew.length === 0) {
-      showToast?.('Active flights and crew data required to trigger disruption notice.');
+  // Flight disruption alert: the chosen flight's assigned crew only.
+  const [disruption, setDisruption] = useState<{ open: boolean; flightId: string; type: string; reason: string }>({
+    open: false,
+    flightId: '',
+    type: 'Delay',
+    reason: '',
+  });
+  const crewOnFlight = (flightId: string): CrewMember[] => {
+    const ids = new Set<string>();
+    assignments
+      .filter((a) => a.flightId === flightId)
+      .forEach((a) => {
+        if (a.captainId) ids.add(a.captainId);
+        if (a.firstOfficerId) ids.add(a.firstOfficerId);
+        (a.cabinCrewIds || []).forEach((id) => ids.add(id));
+      });
+    return crew.filter((c) => ids.has(c.id));
+  };
+  const handleTriggerDisruptionAlert = () => setDisruption((d) => ({ ...d, open: !d.open }));
+  const handleSendDisruptionAlert = async () => {
+    const flight = flights.find((f) => f.id === disruption.flightId);
+    if (!flight) {
+      showToast?.('Choose the affected flight.');
       return;
     }
-    const flight = flights[0];
-    const affectedCrew = crew.slice(0, 3);
-    const newItems = buildNotificationForDisruption(
-      'AOG - Maintenance Schedule Amendment',
-      flight,
-      affectedCrew,
-      'Aircraft undergoing maintenance check. Standby crew activated.',
-      currentUser?.name || 'OCC Dispatcher'
-    );
-
-    const currentQueue = getNotificationQueue();
-    const formatted: NotificationQueueItem[] = newItems.map((n) => ({
-      ...n,
-      channel: n.channel as NotificationChannel,
-      statusTimeline: [
-        {
-          status: n.status as NotificationStatus,
-          timestamp: new Date().toISOString(),
-          actorOrProvider: currentUser?.name || 'OCC Dispatcher',
-          note: 'Critical disruption alert created',
-        },
-      ],
-      retryHistory: [],
-    }));
-
-    const combined = [...formatted, ...currentQueue];
-    saveNotificationQueue(combined);
-    setQueueState(combined);
-
-    for (const qItem of formatted) {
-      await createNotificationLog(qItem);
+    if (!disruption.reason.trim()) {
+      showToast?.('Enter the reason, as crew will read it.');
+      return;
     }
+    const affected = crewOnFlight(flight.id);
+    if (affected.length === 0) {
+      showToast?.(`No crew are assigned to ${flight.flightNumber} on ${flight.date}, so there is nobody to alert.`);
+      return;
+    }
+    if (!window.confirm(`Send a ${disruption.type} alert for ${flight.flightNumber} ${flight.date} to ${affected.length} assigned crew?`)) return;
+    const items = buildNotificationForDisruption(disruption.type, flight, affected, disruption.reason.trim(), currentUser?.name || 'OCC Dispatcher');
+    const res = await sendNotificationsNow(items, currentUser?.name || 'OCC Dispatcher', 'Disruption alert');
+    setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
-
-    showToast?.(`Dispatched ${formatted.length} critical disruption alerts.`);
-    onLogAudit?.('DISRUPTION_ALERT_TRIGGER', `Disruption alert for flight ${flight.flightNumber}`, 'CRITICAL');
+    setDisruption({ open: false, flightId: '', type: 'Delay', reason: '' });
+    showToast?.(`Disruption alert: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''}.`);
+    onLogAudit?.(
+      'DISRUPTION_ALERT_TRIGGER',
+      `${disruption.type} alert for ${flight.flightNumber} ${flight.date} to ${affected.length} crew: ${disruption.reason.trim()}`,
+      'CRITICAL'
+    );
   };
 
   // Handle Bulk Compose Dispatch
   const handleSendBulkNotification = async () => {
+    if (!composeData.subject.trim() || !composeData.message.trim()) {
+      showToast?.('Write a subject and a message first.');
+      return;
+    }
     let targetRecipients: CrewMember[] = [];
     switch (composeData.targetType) {
       case 'ALL_CREW':
@@ -491,18 +496,15 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
       });
     });
 
-    const currentQueue = getNotificationQueue();
-    const updatedQueue = [...newQueueItems, ...currentQueue];
-    saveNotificationQueue(updatedQueue);
-    setQueueState(updatedQueue);
-
-    for (const qItem of newQueueItems) {
-      await createNotificationLog(qItem);
-    }
+    if (!window.confirm(`Send "${composeData.subject.trim()}" to ${targetRecipients.length} crew member(s)? (${newQueueItems.length} messages)`)) return;
+    // Sent straight away: there is no server to send queued messages later.
+    const res = await sendNotificationsNow(newQueueItems as unknown as NotificationItem[], currentUser?.name || 'OCC Dispatcher', 'Broadcast');
+    setQueueState(getNotificationQueue());
     setLogs(getLocalNotificationLogs());
 
-    showToast?.(`Dispatched ${newQueueItems.length} notifications to ${targetRecipients.length} crew.`);
-    onLogAudit?.('BULK_DISPATCH', `Dispatched ${newQueueItems.length} messages for target: ${composeData.targetType}`, 'INFO');
+    showToast?.(`Broadcast: ${res.sent} sent${res.failed ? `, ${res.failed} failed (see the log)` : ''} to ${targetRecipients.length} crew.`);
+    onLogAudit?.('BULK_DISPATCH', `Broadcast "${composeData.subject.trim()}" to ${targetRecipients.length} crew (${res.sent} sent, ${res.failed} failed)`, 'INFO');
+    setComposeData((c) => ({ ...c, subject: '', message: '' }));
     setActiveTab('logs');
   };
 
@@ -617,7 +619,7 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
               className="px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition"
             >
               <Plane className="w-3.5 h-3.5" />
-              <span>Trigger Roster Broadcast</span>
+              <span>Resend Roster Notices</span>
             </button>
 
             <button
@@ -625,10 +627,69 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
               className="px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition"
             >
               <AlertTriangle className="w-3.5 h-3.5" />
-              <span>Trigger Disruption Alert</span>
+              <span>Disruption Alert</span>
             </button>
           </div>
         </div>
+
+        {disruption.open && (
+          <div className="mt-4 p-4 rounded-lg border border-red-500/40 bg-red-950/30 space-y-3">
+            <p className="text-xs text-red-200 font-semibold">
+              Disruption alert: goes by email and in-app to the crew assigned to the chosen flight only.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <select
+                value={disruption.flightId}
+                onChange={(e) => setDisruption((d) => ({ ...d, flightId: e.target.value }))}
+                className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-100"
+              >
+                <option value="">Choose the flight…</option>
+                {[...flights]
+                  .filter((f) => f.date >= todayISO())
+                  .sort((x, y) => `${x.date}${x.std}`.localeCompare(`${y.date}${y.std}`))
+                  .slice(0, 300)
+                  .map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.date} {f.std} {f.flightNumber} {f.departure}–{f.arrival} ({crewOnFlight(f.id).length} crew)
+                    </option>
+                  ))}
+              </select>
+              <select
+                value={disruption.type}
+                onChange={(e) => setDisruption((d) => ({ ...d, type: e.target.value }))}
+                className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-100"
+              >
+                {['Delay', 'Cancellation', 'Aircraft change', 'Aircraft on ground (AOG)', 'Diversion', 'Weather', 'Other'].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={disruption.reason}
+                onChange={(e) => setDisruption((d) => ({ ...d, reason: e.target.value }))}
+                placeholder="Reason and instructions for crew"
+                maxLength={500}
+                className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-100"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleSendDisruptionAlert}
+                className="px-3 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5"
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>Send alert</span>
+              </button>
+              <button
+                onClick={() => setDisruption({ open: false, flightId: '', type: 'Delay', reason: '' })}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Operational Diagnostics Metrics Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mt-5 pt-5 border-t border-slate-800">
@@ -1912,14 +1973,18 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-              {Object.entries(systemSettings.autoTriggers).map(([key, enabled]) => (
+              {Object.entries(systemSettings.autoTriggers).map(([key, enabled]) => {
+                const unavailable = TRIGGER_UNAVAILABLE[key];
+                return (
                 <label
                   key={key}
-                  className="p-3 bg-white border border-slate-200 rounded-lg flex items-center space-x-2.5 cursor-pointer hover:border-orange-300"
+                  title={unavailable || TRIGGER_HELP[key] || ''}
+                  className={`p-3 bg-white border border-slate-200 rounded-lg flex items-start space-x-2.5 ${unavailable ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:border-orange-300'}`}
                 >
                   <input
                     type="checkbox"
-                    checked={enabled}
+                    disabled={!!unavailable}
+                    checked={!unavailable && enabled}
                     onChange={(e) => {
                       const updated = {
                         ...systemSettings,
@@ -1931,14 +1996,18 @@ export const NotificationsDashboard: React.FC<NotificationsDashboardProps> = ({
                     }}
                     className="rounded text-orange-600 focus:ring-orange-500"
                   />
-                  <span className="font-semibold text-slate-800">
-                    {key
-                      .replace(/^on/, '')
-                      .replace(/([A-Z])/g, ' $1')
-                      .trim()}
+                  <span>
+                    <span className="font-semibold text-slate-800 block">
+                      {key
+                        .replace(/^on/, '')
+                        .replace(/([A-Z])/g, ' $1')
+                        .trim()}
+                    </span>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">{unavailable || TRIGGER_HELP[key]}</span>
                   </span>
                 </label>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

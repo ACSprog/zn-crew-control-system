@@ -6,9 +6,10 @@
  * background servers on the free plan, so nothing is sent while nobody has
  * the app open (scheduled reminders would need Power Automate / Apps Script).
  */
-import type { Assignment, CrewMember, Flight } from '../../types';
+import type { Assignment, CrewMember, Flight, LeaveTrainingRecord } from '../../types';
 import type { NotificationItem, NotificationSystemSettings } from '../../types/notifications';
 import {
+  buildNotificationForDisruption,
   buildNotificationForRosterChange,
   buildNotificationItemsForRosterPublish,
   loadNotificationSettings,
@@ -35,6 +36,17 @@ async function dispatchItems(
   if (!settings.autoTriggers?.[trigger] || items.length === 0) {
     return { skipped: true, sent: 0, failed: 0 };
   }
+  return sendNotificationsNow(items, actor, `Automatic (${trigger})`);
+}
+
+/**
+ * Sends messages straight away (Power Automate email / in-app), records each
+ * in the shared notification log, and returns how many went out. Used by the
+ * automatic triggers and by the manual actions on the Notifications screen.
+ */
+export async function sendNotificationsNow(items: NotificationItem[], actor: string, note: string): Promise<AutoDispatchResult> {
+  const settings = loadNotificationSettings();
+  if (items.length === 0) return { skipped: true, sent: 0, failed: 0 };
   let sent = 0;
   let failed = 0;
   const done: NotificationQueueItem[] = [];
@@ -50,7 +62,7 @@ async function dispatchItems(
           status: result.status,
           timestamp: new Date().toISOString(),
           actorOrProvider: result.provider || actor,
-          note: `Automatic (${trigger})${result.errorMessage ? `: ${result.errorMessage}` : ''}`,
+          note: `${note}${result.errorMessage ? `: ${result.errorMessage}` : ''}`,
         },
       ],
       retryHistory: result.retryHistory || [],
@@ -119,4 +131,86 @@ export function autoNotifyRosterChange(
     }
   });
   return dispatchItems(items, 'onRosterChange', actor);
+}
+
+const FLIGHT_FIELDS: Array<[keyof Flight, string]> = [
+  ['date', 'Date'],
+  ['std', 'Departure time'],
+  ['sta', 'Arrival time'],
+  ['departure', 'From'],
+  ['arrival', 'To'],
+  ['aircraft', 'Aircraft type'],
+  ['registration', 'Aircraft'],
+  ['status', 'Status'],
+];
+
+/**
+ * A published flight (today or later) changed date, times, route, aircraft
+ * or status: tell the crew assigned to it.
+ */
+export function autoNotifyFlightChange(
+  previous: Flight | undefined,
+  updated: Flight,
+  assignments: Assignment[],
+  crew: CrewMember[],
+  actor: string
+): Promise<AutoDispatchResult> {
+  const none = Promise.resolve({ skipped: true, sent: 0, failed: 0 });
+  if (!previous) return none;
+  const today = new Date().toISOString().slice(0, 10);
+  if ((updated.date || '') < today && (previous.date || '') < today) return none;
+  const changes = FLIGHT_FIELDS.filter(([k]) => String(previous[k] ?? '') !== String(updated[k] ?? '')).map(
+    ([k, label]) => `${label}: ${previous[k] ?? '-'} → ${updated[k] ?? '-'}`
+  );
+  if (changes.length === 0) return none;
+  const published = assignments.filter((a) => a.flightId === updated.id && a.published);
+  const ids = new Set<string>();
+  published.forEach((a) => crewIdsOf(a).forEach((id) => ids.add(id)));
+  const affected = crew.filter((c) => ids.has(c.id));
+  if (affected.length === 0) return none;
+  const items = buildNotificationForDisruption('Flight change', updated, affected, changes.join('; '), actor).map((n) => ({
+    ...n,
+    notificationType: 'FLIGHT_CHANGE' as const,
+    priority: 'HIGH' as const,
+  }));
+  return dispatchItems(items, 'onFlightChange', actor);
+}
+
+/** Leave or training added or removed: tell the crew member concerned. */
+export function autoNotifyLeaveUpdate(
+  record: LeaveTrainingRecord,
+  change: 'added' | 'removed',
+  crew: CrewMember[],
+  actor: string
+): Promise<AutoDispatchResult> {
+  const member = crew.find((c) => c.id === record.crewId);
+  if (!member?.email) return Promise.resolve({ skipped: true, sent: 0, failed: 0 });
+  const period = record.startDate === record.endDate ? record.startDate : `${record.startDate} to ${record.endDate}`;
+  const subject = `${record.type} ${change === 'added' ? 'scheduled' : 'cancelled'}: ${period}`;
+  const message =
+    change === 'added'
+      ? `Dear ${member.name},\n\n${record.type} has been recorded for you for ${period}. You will not be rostered for flying duties in this period.${record.description ? `\n\nDetails: ${record.description}` : ''}\n\nZambia Airways Crew Control`
+      : `Dear ${member.name},\n\nYour ${record.type} for ${period} has been cancelled. You may now be rostered for duties in this period.\n\nZambia Airways Crew Control`;
+  const now = new Date().toISOString();
+  const items: NotificationItem[] = (['EMAIL', 'IN_APP'] as const).map((channel) => ({
+    id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${channel}`,
+    recipientId: member.id,
+    recipientName: member.name,
+    recipientRole: member.role,
+    recipientStaffNumber: member.staffNumber,
+    recipientEmail: member.email,
+    channel,
+    notificationType: 'LEAVE_MODIFICATION',
+    priority: 'NORMAL',
+    subject,
+    message,
+    createdAt: now,
+    status: 'QUEUED',
+    retryCount: 0,
+    maxRetries: 3,
+    retryHistory: [],
+    initiatedBy: actor,
+    provider: channel === 'EMAIL' ? 'POWER_AUTOMATE' : 'IN_APP_DISPATCH',
+  }));
+  return dispatchItems(items, 'onLeaveUpdate', actor);
 }

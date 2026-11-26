@@ -1,9 +1,10 @@
+import { startSharedNotificationConfigSync } from './utils/notificationEngine';
 import React, { useState, useEffect } from 'react';
 import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet } from './types';
 import { logAudit, type AuditArea } from './utils/auditTrail';
 import { APP_ENV, onSyncFailure } from './utils/firebaseSync';
 import { currentPeriod } from './utils/dates';
-import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
+import { autoNotifyFlightChange, autoNotifyLeaveUpdate, autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
   getCrew,
   saveCrew,
@@ -420,11 +421,20 @@ export function App() {
   };
   const signedInEmail = firebaseUser?.email || '';
   const signedInUid = firebaseUser?.uid || '';
+  // Notification switches, templates and crew preferences are shared by every
+  // computer (integrations/notificationConfig); the roles that send messages
+  // keep a live copy.
+  useEffect(() => {
+    if (!signedInRole || !['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER'].includes(String(signedInRole))) return;
+    return startSharedNotificationConfigSync();
+  }, [signedInRole]);
+
   // A save the database refused must not look saved (see onSyncFailure).
   useEffect(() => {
     const AREA: Record<string, string> = {
       crew: 'crew records', flights: 'flights', assignments: 'crew assignments', leave: 'leave & training',
       fleet: 'the aircraft fleet', acknowledgments: 'roster acknowledgements', config: 'the legality rules',
+      integrations: 'the notification settings',
     };
     return onSyncFailure((f) => {
       const what = AREA[f.collection] || f.collection;
@@ -670,10 +680,15 @@ export function App() {
   };
 
   const handleUpdateFlight = (updatedFlight: Flight) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
+    const previous = flights.find((f) => f.id === updatedFlight.id);
     const updated = flights.map((f) => (f.id === updatedFlight.id ? updatedFlight : f));
     setFlightsState(updated);
     saveFlights(updated);
     showToast(`Updated flight ${updatedFlight.flightNumber}`);
+    autoNotifyFlightChange(previous, updatedFlight, assignments, crew, currentUser?.name || 'OCC')
+      .then((r) => !r.skipped && showToast(`Flight change sent to crew: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}.`))
+      .catch((err) => console.warn('[notify] flight change', err));
   };
 
   const handleDeleteFlight = (id: string) => {
@@ -737,14 +752,17 @@ export function App() {
     setLeaveRecordsState(updated);
     saveLeaveRecords(updated);
     showToast(`Registered ${created.type} exclusion for crew`);
+    autoNotifyLeaveUpdate(created, 'added', crew, currentUser?.name || 'OCC').catch((err) => console.warn('[notify] leave', err));
   };
 
   const handleDeleteLeaveRecord = (id: string) => {
     if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
+    const removed = leaveRecords.find((r) => r.id === id);
     const updated = leaveRecords.filter((r) => r.id !== id);
     setLeaveRecordsState(updated);
     saveLeaveRecords(updated);
     showToast(`Removed leave / training exclusion`);
+    if (removed) autoNotifyLeaveUpdate(removed, 'removed', crew, currentUser?.name || 'OCC').catch((err) => console.warn('[notify] leave', err));
   };
 
   const handleSaveRules = (newRules: LegalityRules) => {
