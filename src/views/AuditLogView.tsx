@@ -9,6 +9,7 @@ import {
   History,
   Loader2,
   Lock,
+  Power,
   Search,
   ShieldCheck,
 } from 'lucide-react';
@@ -22,13 +23,17 @@ import {
   loadRecordHistory,
   loadReviews,
   logAudit,
+  startAuditTrail,
+  subscribeAuditSwitch,
   toRow,
+  type AuditSwitch,
   MAX_PERIOD_ENTRIES,
   type AnyAuditEntry,
   type AuditArea,
   type AuditEntry,
 } from '../utils/auditTrail';
 import { exportAuditToExcel, openAuditPack, type PackSubject } from '../utils/auditExport';
+import { APP_ENV } from '../utils/firebaseSync';
 
 interface AuditLogViewProps {
   currentUser: { name: string; email?: string; role: string };
@@ -158,6 +163,9 @@ function EntryRows({ entries, emptyText }: { entries: AnyAuditEntry[]; emptyText
 
 export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, flights, fleet }) => {
   const access = auditAccess(currentUser.role);
+  const [auditSwitch, setAuditSwitch] = useState<AuditSwitch>({ loaded: false, enabled: false, enabledAt: null, enabledBy: '' });
+  useEffect(() => subscribeAuditSwitch(setAuditSwitch), []);
+  const [starting, setStarting] = useState(false);
   const madeBy = `${currentUser.name}${currentUser.email ? ` <${currentUser.email}>` : ''} (${currentUser.role})`;
 
   // ---- Period log (full readers) ----
@@ -389,6 +397,27 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
     }
   };
 
+  const turnOn = async () => {
+    const ok = window.confirm(
+      'Start the audit trail now?\n\nFrom now on every sign-in, change, user change and export is recorded permanently.\nIt can NOT be stopped again.'
+    );
+    if (!ok) return;
+    setStarting(true);
+    setError('');
+    try {
+      await startAuditTrail();
+      setNotice('The audit trail has started. Every action is now recorded.');
+      setTimeout(() => {
+        setToDay(dayInput(new Date()));
+        loadPeriod();
+      }, 1500);
+    } catch (e) {
+      setError(`Could not start the audit trail: ${(e as Error)?.message || e}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   if (access === 'none') {
     return (
       <div className="p-6">
@@ -433,6 +462,42 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
         )}
       </div>
 
+      {APP_ENV !== 'live' && (
+        <div className="p-4 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs flex items-start gap-2">
+          <Power className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
+          <p>
+            <b>Test environment: no audit trail is recorded here.</b> Testing doesn't create audit entries. The audit trail records everything in the
+            live system, from the first Super Admin sign-in.
+          </p>
+        </div>
+      )}
+
+      {APP_ENV === 'live' && auditSwitch.loaded && !auditSwitch.enabled && (
+        <div className="p-4 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-900 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="text-xs space-y-1">
+            <p className="font-extrabold text-sm flex items-center gap-2">
+              <Power className="w-4 h-4" /> The audit trail hasn't started yet
+            </p>
+            <p>
+              It starts automatically when a Super Admin signs in to the live system.
+              {currentUser.role === 'SUPER_ADMIN' ? ' If it didn\'t, start it here.' : ' Ask a Super Admin to sign in.'} Once started, it can't be stopped.
+            </p>
+          </div>
+          {currentUser.role === 'SUPER_ADMIN' && (
+            <button onClick={turnOn} disabled={starting} className={`${btn} bg-amber-600 hover:bg-amber-700 text-white shrink-0`}>
+              {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />} Start the audit trail
+            </button>
+          )}
+        </div>
+      )}
+
+      {auditSwitch.enabled && (
+        <p className="text-[11px] text-emerald-700 flex items-center gap-1.5 -mt-3">
+          <Lock className="w-3 h-3" /> Recording since {auditSwitch.enabledAt ? fmtDateTime(auditSwitch.enabledAt) : 'go-live'}
+          {auditSwitch.enabledBy && ` (turned on by ${auditSwitch.enabledBy})`}. It can't be turned off.
+        </p>
+      )}
+
       {error && (
         <div className="p-3 rounded-xl border bg-red-50 border-red-300 text-red-900 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
@@ -443,7 +508,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
       {access === 'full' && (
         <>
           {/* Review status */}
-          <div
+          {auditSwitch.enabled && <div
             className={`p-4 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
               reviewOverdue ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-white border-slate-200 text-slate-700'
             }`}
@@ -461,7 +526,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser, crew, f
               )}
             </div>
             {reviews.length > 1 && <span className="text-slate-500">{reviews.length} reviews recorded</span>}
-          </div>
+          </div>}
 
           {reviewOpen && (
             <div className="bg-white p-4 rounded-xl border border-emerald-300 shadow-xs space-y-3">

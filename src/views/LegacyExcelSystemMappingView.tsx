@@ -661,16 +661,6 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
             </button>
           )}
 
-          {onResetSampleData && (
-            <button
-              onClick={() => setIsResetModalOpen(true)}
-              className="px-3 py-2 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-              title="Restore demo sample dataset"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-[#F37C1C]" />
-              <span>Restore Demo Data</span>
-            </button>
-          )}
 
           <button
             onClick={handleDownloadSampleCsv}

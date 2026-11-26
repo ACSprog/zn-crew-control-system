@@ -1,3 +1,4 @@
+import { APP_ENV } from '../utils/firebaseSync';
 import React, { useState } from 'react';
 import { LegalityRules, AircraftFleet } from '../types';
 import { Sliders, RefreshCw, Save, CheckCircle2, ShieldAlert, Plane, Trash2, Database, Plus, Download, Upload } from 'lucide-react';
@@ -529,7 +530,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* Database Management & Data Wipe Card */}
+      {/* Database Management & Data Wipe Card (test environment only) */}
+      {APP_ENV !== 'live' && (
       <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 space-y-4">
         <div>
           <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 font-mono">
@@ -537,7 +539,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             DATABASE &amp; CUSTOM DATA INITIALIZATION
           </h3>
           <p className="text-xs text-slate-500 font-medium">
-            Clear sample records to insert your own custom airline data, or restore default Zambia Airways demo data.
+            Test environment only: clear test records to start again with a blank database. Not available in the live system.
           </p>
         </div>
 
@@ -558,7 +560,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   if (!canResetData) return;
                   if (
                     window.confirm(
-                      'Are you sure you want to CLEAR ALL DATA across all pages? This permanently deletes every crew, flight, assignment, leave and fleet record from the live database for everyone. This cannot be undone.'
+                      'Are you sure you want to CLEAR ALL DATA in the test environment? This permanently deletes every crew, flight, assignment, leave and fleet record in the test database for everyone. The live system is not affected.'
                     )
                   ) {
                     onClearAllData();
@@ -572,19 +574,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             )}
 
-{onResetSampleData && (
-            <button
-              type="button"
-              onClick={onResetSampleData}
-              className="flex items-center gap-2 px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-xl transition-all cursor-pointer font-mono"
-            >
-              <RefreshCw className="w-4 h-4 text-slate-600" />
-              <span>RESTORE SAMPLE DEMO DATA</span>
-            </button>
-            )}
           </div>
         </div>
       </div>
+      )}
 
       {/* Fleet Modal */}
       {onSaveFleet && (

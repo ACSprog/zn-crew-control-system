@@ -1,7 +1,8 @@
 # Test and live environments
 
 The system runs as **two separate Firebase projects**. Each has its own database, user
-accounts, security settings and audit log. Nothing done in test can touch live.
+accounts and security settings. Nothing done in test can touch live. **The audit trail is
+recorded in the live system only** (docs/AUDIT_TRAIL.md).
 
 | | Test | Live |
 |---|---|---|
@@ -11,9 +12,6 @@ accounts, security settings and audit log. Nothing done in test can touch live.
 | Who uses it | You and testers, with test data | Staff and crew, with real data |
 | Updated by | Merging into `master` (GitHub), or `npm run deploy` | **Only** `npm run go-live`, or GitHub → Actions → **Go live** |
 | GitHub secret | `FIREBASE_SERVICE_ACCOUNT` (a key of the test project) | `FIREBASE_SERVICE_ACCOUNT_LIVE` (a key of the live project) |
-
-The test site shows an amber **TEST ENVIRONMENT** label in the corner of every screen, and
-`[TEST]` in the browser tab.
 
 ## Making a change (before and after go-live)
 
