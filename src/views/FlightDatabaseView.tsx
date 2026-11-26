@@ -76,7 +76,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
     const matchingFleet = fleet.find(f => f.aircraftType === defaultAircraft);
     setEditingFlight(null);
     setFormData({
-      flightNumber: `ZN${Math.floor(100 + Math.random() * 900)}`,
+      flightNumber: '',
       date: todayISO(),
       aircraft: defaultAircraft,
       registration: matchingFleet ? matchingFleet.registration : (fleet.length > 0 ? fleet[0].registration : ''),
@@ -208,6 +208,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {onSaveFleet && (
             <button
               onClick={() => setIsFleetModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-2 bg-[#2E2C2B] hover:bg-black text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer font-mono"
@@ -215,6 +216,7 @@ export const FlightDatabaseView: React.FC<FlightDatabaseViewProps> = ({
               <Plane className="w-4 h-4 text-[#F37C1C]" />
               <span>Manage Fleet ({fleet.length})</span>
             </button>
+            )}
 
             <button
               onClick={handleDownloadScheduleTemplate}

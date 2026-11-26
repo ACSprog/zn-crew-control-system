@@ -145,7 +145,10 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
     col3: '',
     col4: '',
     col5: 'Q400',
+    col6: '',
+    col7: '',
   });
+  const [manualError, setManualError] = useState<string | null>(null);
 
   // Macro Engine Terminal Logs
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
@@ -483,13 +486,22 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
 
   // Handle Manual Single Form Add
   const handleAddManualFormRow = () => {
-    if (!manualForm.col1) return;
+    setManualError(null);
+    if (!manualForm.col1.trim()) {
+      setManualError('Fill in the first field.');
+      return;
+    }
 
     if (selectedEntity === 'crew') {
+      // No invented staff numbers or guessed email addresses: both identify a real person.
+      if (!manualForm.col4.trim() || !manualForm.col2.trim()) {
+        setManualError('Enter the staff number and the company email address.');
+        return;
+      }
       const row = {
-        'Employee ID': `ZA-M-${Math.floor(100 + Math.random() * 900)}`,
-        Name: manualForm.col1,
-        'Company Email': manualForm.col2 || `${manualForm.col1.toLowerCase().replace(/\s+/g, '.')}@zambiaairways.co.zm`,
+        'Employee ID': manualForm.col4.trim(),
+        Name: manualForm.col1.trim(),
+        'Company Email': manualForm.col2.trim().toLowerCase(),
         'Role / Position': manualForm.col3 || 'Captain',
         'Fleet Aircraft': manualForm.col5,
         Base: 'LUN',
@@ -497,12 +509,16 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
       processAndImportRows([row], 'crew');
       addLog(`Manual entry added: Crew Member "${manualForm.col1}".`);
     } else if (selectedEntity === 'flights') {
+      if (!manualForm.col4 || !manualForm.col6 || !manualForm.col7 || !manualForm.col2.trim() || !manualForm.col3.trim()) {
+        setManualError('Enter the origin, destination, date, departure time and arrival time.');
+        return;
+      }
       const row = {
-        'Flight Number': manualForm.col1,
-        Origin: manualForm.col2 || 'LUN',
-        Destination: manualForm.col3 || 'NLA',
-        'Departure Time': '2026-08-16T08:00',
-        'Arrival Time': '2026-08-16T09:00',
+        'Flight Number': manualForm.col1.trim(),
+        Origin: manualForm.col2.trim().toUpperCase(),
+        Destination: manualForm.col3.trim().toUpperCase(),
+        'Departure Time': `${manualForm.col4}T${manualForm.col6}`,
+        'Arrival Time': `${manualForm.col4}T${manualForm.col7}`,
         'Fleet Aircraft': manualForm.col5,
       };
       processAndImportRows([row], 'flights');
@@ -519,7 +535,7 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
       addLog(`Manual entry added: Fleet Aircraft Registration "${manualForm.col1}".`);
     }
 
-    setManualForm({ col1: '', col2: '', col3: '', col4: '', col5: 'Q400' });
+    setManualForm({ col1: '', col2: '', col3: '', col4: '', col5: 'Q400', col6: '', col7: '' });
   };
 
   // Macro Simulators
@@ -845,6 +861,13 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
                     className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
                   />
                   <input
+                    type="text"
+                    placeholder="Staff Number"
+                    value={manualForm.col4}
+                    onChange={(e) => setManualForm({ ...manualForm, col4: e.target.value })}
+                    className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                  />
+                  <input
                     type="email"
                     placeholder="Company Email"
                     value={manualForm.col2}
@@ -893,6 +916,27 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
                     placeholder="Destination (e.g. NLA)"
                     value={manualForm.col3}
                     onChange={(e) => setManualForm({ ...manualForm, col3: e.target.value })}
+                    className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                  />
+                  <input
+                    type="date"
+                    title="Flight date"
+                    value={manualForm.col4}
+                    onChange={(e) => setManualForm({ ...manualForm, col4: e.target.value })}
+                    className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                  />
+                  <input
+                    type="time"
+                    title="Departure time"
+                    value={manualForm.col6}
+                    onChange={(e) => setManualForm({ ...manualForm, col6: e.target.value })}
+                    className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
+                  />
+                  <input
+                    type="time"
+                    title="Arrival time"
+                    value={manualForm.col7}
+                    onChange={(e) => setManualForm({ ...manualForm, col7: e.target.value })}
                     className="px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#F37C1C]"
                   />
                   <select
@@ -950,6 +994,7 @@ export const LegacyExcelSystemMappingView: React.FC<LegacyExcelSystemMappingView
               <Check className="w-4 h-4" />
               <span>Add Record To Database</span>
             </button>
+            {manualError && <p className="text-xs font-semibold text-red-700">{manualError}</p>}
           </div>
 
           {/* Paste CSV Raw Text */}

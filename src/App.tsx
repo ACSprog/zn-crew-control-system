@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ActiveView, CrewMember, Flight, Assignment, LeaveTrainingRecord, LegalityRules, SystemUser, AircraftFleet } from './types';
 import { logAudit, type AuditArea } from './utils/auditTrail';
-import { APP_ENV } from './utils/firebaseSync';
+import { APP_ENV, onSyncFailure } from './utils/firebaseSync';
 import { currentPeriod } from './utils/dates';
 import { autoNotifyRosterChange } from './modules/notifications/autoDispatch';
 import {
@@ -345,11 +345,11 @@ export function App() {
   // Toast Banner State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const showToast = (msg: string) => {
+  const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (msg: string, ms = 4000) => {
     setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4000);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastMessage(null), ms);
   };
 
   // Audit trail (docs/AUDIT_TRAIL.md): server time, person, role and device are
@@ -399,8 +399,45 @@ export function App() {
   // back in (possibly as a different user) gets a fresh subscription.
   const isCrewRole = signedInRole === 'FLIGHT_CREW' || signedInRole === 'PILOT_CABIN';
   const isUserManager = signedInRole === 'SUPER_ADMIN' || signedInRole === 'ADMIN';
+
+  // Who may change what. Matches firestore.rules (canManageRoster / isAdmin):
+  // the database refuses anything else, so stop it here with a clear message
+  // instead of letting a change appear on screen and then be lost.
+  const WRITE_ROLES: Record<'roster' | 'admin', string[]> = {
+    roster: ['SUPER_ADMIN', 'ADMIN', 'OCC_CONTROLLER', 'SCHEDULER', 'CHIEF_PILOT'],
+    admin: ['SUPER_ADMIN', 'ADMIN'],
+  };
+  const canWrite = (kind: 'roster' | 'admin') => WRITE_ROLES[kind].includes(String(signedInRole || currentUser.role));
+  const requireWrite = (kind: 'roster' | 'admin', what: string): boolean => {
+    if (canWrite(kind)) return true;
+    showToast(
+      kind === 'admin'
+        ? `Only System Admins and Super Admins can change ${what}. Nothing was changed.`
+        : `Your role is read-only for ${what}. Nothing was changed.`,
+      7000
+    );
+    return false;
+  };
   const signedInEmail = firebaseUser?.email || '';
   const signedInUid = firebaseUser?.uid || '';
+  // A save the database refused must not look saved (see onSyncFailure).
+  useEffect(() => {
+    const AREA: Record<string, string> = {
+      crew: 'crew records', flights: 'flights', assignments: 'crew assignments', leave: 'leave & training',
+      fleet: 'the aircraft fleet', acknowledgments: 'roster acknowledgements', config: 'the legality rules',
+    };
+    return onSyncFailure((f) => {
+      const what = AREA[f.collection] || f.collection;
+      showToast(
+        f.code === 'permission-denied'
+          ? `Not saved: you don't have permission to change ${what}, or your session has expired. The screen now shows the saved data. Sign in again if this keeps happening.`
+          : `Not saved: changes to ${what} could not be saved (${f.code}). The screen now shows the saved data.`,
+        10000
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!appUnlocked) return;
 
@@ -484,6 +521,7 @@ export function App() {
   }, [crew, flights, assignments, leaveRecords, fleet, rules]);
 
   const handleSaveFleet = (updatedFleet: AircraftFleet[]) => {
+    if (!requireWrite('admin', 'the aircraft fleet')) return;
     setFleetState(updatedFleet);
     saveFleet(updatedFleet);
     logAction('Fleet Updated', `Saved aircraft fleet configuration (${updatedFleet.length} aircraft).`);
@@ -491,6 +529,7 @@ export function App() {
   };
 
   const handleImportFleet = (imported: AircraftFleet[]) => {
+    if (!requireWrite('admin', 'the aircraft fleet')) return;
     const updated = [...fleet, ...imported];
     setFleetState(updated);
     saveFleet(updated);
@@ -567,6 +606,7 @@ export function App() {
 
   // CRUD Helpers
   const handleAddCrew = (newMember: Omit<CrewMember, 'id'>) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const created: CrewMember = {
       ...newMember,
       // Stored lower-case so it matches the sign-in email (crew portal access rule).
@@ -580,6 +620,7 @@ export function App() {
   };
 
   const handleUpdateCrew = (rawMember: CrewMember) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const updatedMember: CrewMember = { ...rawMember, email: (rawMember.email || '').trim().toLowerCase() };
     const updated = crew.map((c) => (c.id === updatedMember.id ? updatedMember : c));
     setCrewState(updated);
@@ -588,6 +629,7 @@ export function App() {
   };
 
   const handleDeleteCrew = (id: string) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const member = crew.find((c) => c.id === id);
     const updated = crew.filter((c) => c.id !== id);
     setCrewState(updated);
@@ -596,6 +638,7 @@ export function App() {
   };
 
   const handleClearAllCrew = () => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     setCrewState([]);
     saveCrew([]);
     logAction('Crew Registry Cleared', `${currentUser.name} cleared all crew records from the active registry.`);
@@ -603,6 +646,7 @@ export function App() {
   };
 
   const handleAddFlight = (newFlight: Omit<Flight, 'id'>) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const created: Flight = {
       ...newFlight,
       id: `flt-${Date.now()}`,
@@ -633,6 +677,7 @@ export function App() {
   };
 
   const handleDeleteFlight = (id: string) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const flight = flights.find((f) => f.id === id);
     const updatedF = flights.filter((f) => f.id !== id);
     const updatedA = assignments.filter((a) => a.flightId !== id);
@@ -644,6 +689,7 @@ export function App() {
   };
 
   const handleClearFlights = (fleetFilter?: 'ALL' | 'Q400' | 'B737') => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     let updatedF: Flight[] = [];
     let updatedA: Assignment[] = [];
     if (fleetFilter && fleetFilter !== 'ALL') {
@@ -659,6 +705,7 @@ export function App() {
   };
 
   const handleUpdateAssignment = (updatedAssignment: Assignment) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const existingIdx = assignments.findIndex((a) => a.flightId === updatedAssignment.flightId);
     const previousAssignment = existingIdx >= 0 ? assignments[existingIdx] : undefined;
     let updated: Assignment[];
@@ -681,6 +728,7 @@ export function App() {
   };
 
   const handleAddLeaveRecord = (newRec: Omit<LeaveTrainingRecord, 'id'>) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const created: LeaveTrainingRecord = {
       ...newRec,
       id: `rec-${Date.now()}`,
@@ -692,6 +740,7 @@ export function App() {
   };
 
   const handleDeleteLeaveRecord = (id: string) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const updated = leaveRecords.filter((r) => r.id !== id);
     setLeaveRecordsState(updated);
     saveLeaveRecords(updated);
@@ -699,6 +748,7 @@ export function App() {
   };
 
   const handleSaveRules = (newRules: LegalityRules) => {
+    if (!requireWrite('admin', 'the legality rules')) return;
     setRulesState(newRules);
     saveRules(newRules);
     showToast('Updated FTL operational limitation rules');
@@ -729,6 +779,7 @@ export function App() {
   };
 
   const handleImportBackup = (jsonStr: string) => {
+    if (!requireWrite('admin', 'the database (backup restore)')) return;
     try {
       importSystemBackupJSON(jsonStr);
       setCrewState(getCrew());
@@ -763,6 +814,7 @@ export function App() {
 
   // Batch Flight Import with Automatic Roster Generation Trigger
   const handleImportFlightsWithAutoRoster = (imported: Flight[]) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     if (!imported || imported.length === 0) return;
 
     // Deduplicate against existing flights
@@ -801,6 +853,7 @@ export function App() {
 
   // Batch Crew Import with Automatic Roster Generation Trigger
   const handleImportCrewWithAutoRoster = (importedCrew: CrewMember[]) => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     if (!importedCrew || importedCrew.length === 0) return;
 
     // Deduplicate against existing crew
@@ -834,6 +887,7 @@ export function App() {
 
   // Quick Action: Auto Generate Roster from anywhere
   const handleQuickGenerateRoster = () => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const result = runAutoScheduler(flights, crew, assignments, leaveRecords, rules);
     setAssignmentsState(result.updatedAssignments);
     saveAssignments(result.updatedAssignments);
@@ -844,6 +898,7 @@ export function App() {
 
   // Quick Action: Optimize Roster
   const handleQuickOptimizeRoster = () => {
+    if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
     const result = optimizeRoster(flights, crew, assignments, leaveRecords, rules, {
       legalCompliance: true,
       crewHourBalance: true,
@@ -1039,7 +1094,7 @@ export function App() {
               onAddFlight={handleAddFlight}
               onUpdateFlight={handleUpdateFlight}
               onDeleteFlight={handleDeleteFlight}
-              onSaveFleet={handleSaveFleet}
+              onSaveFleet={canWrite('admin') ? handleSaveFleet : undefined}
               onClearAllData={APP_ENV === 'live' ? undefined : handleClearAllData}
               onClearFlights={handleClearFlights}
               onImportFlights={handleImportFlightsWithAutoRoster}
@@ -1063,6 +1118,7 @@ export function App() {
               leaveRecords={leaveRecords}
               rules={rules}
               onApplyAssignments={(newAssignments, label) => {
+                if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
                 setAssignmentsState(newAssignments);
                 saveAssignments(newAssignments);
                 showToast(`Applied ${label} to live schedule`);
@@ -1107,7 +1163,7 @@ export function App() {
               rules={rules}
               fleet={fleet}
               onSaveRules={handleSaveRules}
-              onSaveFleet={handleSaveFleet}
+              onSaveFleet={canWrite('admin') ? handleSaveFleet : undefined}
               onSaveAllData={handleSaveAllSystemData}
               onExportBackup={handleExportBackup}
               onImportBackup={handleImportBackup}
@@ -1127,12 +1183,14 @@ export function App() {
               onImportCrew={handleImportCrewWithAutoRoster}
               onImportFlights={handleImportFlightsWithAutoRoster}
               onImportAssignments={(imported) => {
+                if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
                 const updated = [...assignments, ...imported];
                 setAssignmentsState(updated);
                 saveAssignments(updated);
                 showToast(`Imported ${imported.length} duty assignments from Excel/CSV!`);
               }}
               onImportLeaveRecords={(imported) => {
+                if (!requireWrite('roster', 'crew, flights, rosters or leave')) return;
                 const updated = [...leaveRecords, ...imported];
                 setLeaveRecordsState(updated);
                 saveLeaveRecords(updated);
@@ -1211,7 +1269,7 @@ export function App() {
               onAddFlight={handleAddFlight}
               onUpdateFlight={handleUpdateFlight}
               onDeleteFlight={handleDeleteFlight}
-              onSaveFleet={handleSaveFleet}
+              onSaveFleet={canWrite('admin') ? handleSaveFleet : undefined}
               onClearFlights={(fleetFilter) => handleClearFlights(fleetFilter || (activeView === 'q400' ? 'Q400' : 'B737'))}
             />
           )}

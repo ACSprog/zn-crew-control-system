@@ -405,14 +405,49 @@ function planAuditedOp(collectionName: string, op: SyncOp, beforeJson: string | 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Refused saves. A change the database refuses (no permission, signed out,
+// session too old, a rule check failing) must not look saved: the app is told
+// (onSyncFailure, shown as a message) and the screen is put back to the data
+// that is really saved.
+// ---------------------------------------------------------------------------
+
+export interface SyncFailure {
+  collection: string;
+  code: string;
+  message: string;
+}
+
+const syncFailureListeners = new Set<(f: SyncFailure) => void>();
+/** Re-sends the last data received from the database for a collection. */
+const redeliverLastSnapshot = new Map<string, () => void>();
+
+export function onSyncFailure(listener: (f: SyncFailure) => void): () => void {
+  syncFailureListeners.add(listener);
+  return () => syncFailureListeners.delete(listener);
+}
+
 function logBatchError(collectionName: string, err: unknown) {
-  const errorObj = err as { code?: string };
+  const errorObj = err as { code?: string; message?: string };
   if (errorObj?.code === 'resource-exhausted') {
     console.warn(`[FirebaseSync] Write stream busy for ${collectionName}, will retry on next change.`);
   } else if (errorObj?.code === 'unavailable') {
     console.warn(`[FirebaseSync] Network unavailable for ${collectionName}, buffered in cache.`);
   } else {
     console.error(`[FirebaseSync] Error syncing ${collectionName}:`, err);
+    const failure: SyncFailure = {
+      collection: collectionName,
+      code: errorObj?.code || 'unknown',
+      message: errorObj?.message || String(err),
+    };
+    syncFailureListeners.forEach((l) => {
+      try {
+        l(failure);
+      } catch {
+        /* a listener's own error must not stop the others */
+      }
+    });
+    redeliverLastSnapshot.get(collectionName)?.();
   }
 }
 
@@ -424,7 +459,10 @@ async function writeAudited(collectionName: string, ops: SyncOp[]): Promise<void
       .map((op) => planAuditedOp(collectionName, op, beforeCache.get(op.id)))
       .filter((p): p is PlannedWrite => p !== null);
     if (planned.length === 0) {
-      console.warn(`[FirebaseSync] Not saving ${collectionName}: no signed-in account to record in the audit trail.`);
+      logBatchError(
+        collectionName,
+        Object.assign(new Error('No signed-in account to record in the audit trail. Sign in again.'), { code: 'unauthenticated' })
+      );
       return;
     }
     const batch = writeBatch(db);
@@ -613,6 +651,7 @@ function subscribeCollection<T>(
         items.push(data);
         cache.set(docSnap.id, stableStringify(sanitizeForFirestore(data)));
       });
+      redeliverLastSnapshot.set(collectionName, () => onUpdate?.([...items]));
       onUpdate?.(items);
     },
     (err) => onError(collectionName, err)
